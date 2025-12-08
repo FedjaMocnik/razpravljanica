@@ -4,7 +4,7 @@
 // 	protoc        v3.21.12
 // source: razpravljalnica.proto
 
-package public_pb
+package pb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -1248,7 +1248,7 @@ const file_razpravljalnica_proto_rawDesc = "" +
 	"\vGetMessages\x12#.razpravljalnica.GetMessagesRequest\x1a$.razpravljalnica.GetMessagesResponse\x12Y\n" +
 	"\x0eSubscribeTopic\x12&.razpravljalnica.SubscribeTopicRequest\x1a\x1d.razpravljalnica.MessageEvent0\x012c\n" +
 	"\fControlPlane\x12S\n" +
-	"\x0fGetClusterState\x12\x16.google.protobuf.Empty\x1a(.razpravljalnica.GetClusterStateResponseB2Z0github.com/FedjaMocnik/razpravljalnica/public_pbb\x06proto3"
+	"\x0fGetClusterState\x12\x16.google.protobuf.Empty\x1a(.razpravljalnica.GetClusterStateResponseB7Z5github.com/FedjaMocnik/razpravljalnica/pkgs/public/pbb\x06proto3"
 
 var (
 	file_razpravljalnica_proto_rawDescOnce sync.Once

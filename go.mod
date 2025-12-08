@@ -1,4 +1,4 @@
-module github.com/FedjaMocnik/razpravljalnica.git
+module github.com/FedjaMocnik/razpravljalnica
 
 go 1.25.1
 
