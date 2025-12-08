@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: razpravljalnica.proto
 
-package pb
+package public_pb
 
 import (
 	context "context"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 protoc \
-    --go_out=pb --go_opt=paths=source_relative \
-    --go-grpc_out=pb --go-grpc_opt=paths=source_relative \
-    -I proto \
-    proto/razpravljalnica.proto
+    --go_out=public_pb --go_opt=paths=source_relative \
+    --go-grpc_out=public_pb --go-grpc_opt=paths=source_relative \
+    -I public_proto \
+    public_proto/razpravljalnica.proto
