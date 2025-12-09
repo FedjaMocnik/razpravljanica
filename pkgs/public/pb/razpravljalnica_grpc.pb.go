@@ -40,7 +40,7 @@ type MessageBoardClient interface {
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*User, error)
 	// Creates a new topic to which users can post messages
 	CreateTopic(ctx context.Context, in *CreateTopicRequest, opts ...grpc.CallOption) (*Topic, error)
-	// Post a message to a topic; Succed only if the User and the Topic exist in the data base.
+	// Post a message to a topic; Succeed only if the User and the Topic exist in the data base.
 	PostMessage(ctx context.Context, in *PostMessageRequest, opts ...grpc.CallOption) (*Message, error)
 	// Update an existing message. Allowed only for the user who posted the message.
 	UpdateMessage(ctx context.Context, in *UpdateMessageRequest, opts ...grpc.CallOption) (*Message, error)
@@ -183,7 +183,7 @@ type MessageBoardServer interface {
 	CreateUser(context.Context, *CreateUserRequest) (*User, error)
 	// Creates a new topic to which users can post messages
 	CreateTopic(context.Context, *CreateTopicRequest) (*Topic, error)
-	// Post a message to a topic; Succed only if the User and the Topic exist in the data base.
+	// Post a message to a topic; Succeed only if the User and the Topic exist in the data base.
 	PostMessage(context.Context, *PostMessageRequest) (*Message, error)
 	// Update an existing message. Allowed only for the user who posted the message.
 	UpdateMessage(context.Context, *UpdateMessageRequest) (*Message, error)
