@@ -3,7 +3,7 @@ package storage
 import (
 	"sync"
 
-	"github.com/FedjaMocnik/razpravljalnica/pkgs/public/pb"
+	pb "github.com/FedjaMocnik/razpravljalnica/pkgs/public/pb"
 )
 
 type State struct {
@@ -25,7 +25,7 @@ func NewState() *State {
 		topics:      make(map[int64]*pb.Topic),
 		msgID:       1,
 		messages:    make(map[int64]*pb.Message),
-		subscribers: make(map[int64][]chan *pb.MessageEvent),
+		subscribers: make(map[int64][]chan *pb.MessageEvent), // id -> inbox
 	}
 }
 
@@ -160,12 +160,13 @@ func (s *State) GetAllTopics() []*pb.Topic {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	topics := make([]*pb.Topic, 0, len(s.topics))
+	// sl kot slice.
+	slTopics := make([]*pb.Topic, 0, len(s.topics))
 	for _, topic := range s.topics {
-		topics = append(topics, topic)
+		slTopics = append(slTopics, topic)
 	}
 
-	return topics
+	return slTopics
 }
 
 func (s *State) GetMessagesByTopic(topicId int64) []*pb.Message {

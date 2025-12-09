@@ -4,14 +4,14 @@ import (
 	"context"
 	// "fmt"
 
-	"github.com/FedjaMocnik/razpravljalnica/internal/storage"
-	"github.com/FedjaMocnik/razpravljalnica/pkgs/public/pb"
+	storage "github.com/FedjaMocnik/razpravljalnica/internal/storage"
+	pb "github.com/FedjaMocnik/razpravljalnica/pkgs/public/pb"
 
-	"google.golang.org/grpc"
+	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type MessageBoardServer struct {
@@ -75,11 +75,11 @@ func (s *MessageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMessageRequest) (*pb.Message, error) {
 	msg := s.server_state.GetMessage(req.GetMessageId())
 	if msg == nil {
-		return nil, status.Error(codes.NotFound, "sporočilo ne obstaja")
+		return nil, status.Error(codes.NotFound, "Sporočilo ne obstaja.")
 	}
 
 	if msg.UserId != req.GetUserId() {
-		return nil, status.Error(codes.PermissionDenied, "nimate dovoljenja za urejanje tega sporočila")
+		return nil, status.Error(codes.PermissionDenied, "Nimate dovoljenja za urejanje tega sporočila.")
 	}
 
 	msg.Text = req.GetText()
@@ -91,11 +91,11 @@ func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMessageRequest) (*emptypb.Empty, error) {
 	msg := s.server_state.GetMessage(req.GetMessageId())
 	if msg == nil {
-		return nil, status.Error(codes.NotFound, "sporočilo ne obstaja")
+		return nil, status.Error(codes.NotFound, "Sporočilo ne obstaja.")
 	}
 
 	if msg.UserId != req.GetUserId() {
-		return nil, status.Error(codes.PermissionDenied, "nimate dovoljenja za brisanje tega sporočila")
+		return nil, status.Error(codes.PermissionDenied, "Nimate dovoljenja za brisanje tega sporočila.")
 	}
 
 	s.server_state.DeleteMessage(req.GetMessageId(), msg.TopicId)
@@ -106,9 +106,10 @@ func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
 	msg := s.server_state.GetMessage(req.GetMessageId())
 	if msg == nil {
-		return nil, status.Error(codes.NotFound, "sporočilo ne obstaja")
+		return nil, status.Error(codes.NotFound, "Sporočilo ne obstaja.")
 	}
 
+	// TODO more biti pod mutex.
 	msg.Likes++
 	s.server_state.UpdateMessage(msg)
 
@@ -117,16 +118,17 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 
 func (s *MessageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
 	if len(req.GetTopicId()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "ni podanih tem")
+		return nil, status.Error(codes.InvalidArgument, "Ni podanih tem.")
 	}
 
 	for _, topicId := range req.GetTopicId() {
 		topic := s.server_state.GetSingleTopic(topicId)
 		if topic == nil {
-			return nil, status.Errorf(codes.NotFound, "tema %d ne obstaja", topicId)
+			return nil, status.Errorf(codes.NotFound, "Tema %d ne obstaja.", topicId)
 		}
 	}
 
+	// TODO dinamično moramo dodeljevati nodes.
 	return &pb.SubscriptionNodeResponse{
 		SubscribeToken: "token123",
 		Node: &pb.NodeInfo{
@@ -154,13 +156,13 @@ func (s *MessageBoardServer) GetMessages(ctx context.Context, req *pb.GetMessage
 
 func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, stream grpc.ServerStreamingServer[pb.MessageEvent]) error {
 	if len(req.GetTopicId()) == 0 {
-		return status.Error(codes.InvalidArgument, "ni podanih tem")
+		return status.Error(codes.InvalidArgument, "Ni podanih tem.")
 	}
 
 	for _, topicId := range req.GetTopicId() {
 		topic := s.server_state.GetSingleTopic(topicId)
 		if topic == nil {
-			return status.Errorf(codes.NotFound, "tema %d ne obstaja", topicId)
+			return status.Errorf(codes.NotFound, "Tema %d ne obstaja.", topicId)
 		}
 	}
 
@@ -176,6 +178,7 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		}
 	}()
 
+	// TODO trenutno samo prvo posluša...
 	for {
 		select {
 		case <-stream.Context().Done():
