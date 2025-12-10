@@ -33,6 +33,7 @@ func (s *State) Subscribe(topicId int64) chan *pb.MessageEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Clientu naredimo inbox za specifični topic.
 	ch := make(chan *pb.MessageEvent, 100)
 	s.subscribers[topicId] = append(s.subscribers[topicId], ch)
 
@@ -57,6 +58,7 @@ func (s *State) NotifySubscribers(topicId int64, event *pb.MessageEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Vsem subscriberjem za topic z TopicID pushamo v kanal msg.
 	for _, ch := range s.subscribers[topicId] {
 		select {
 		case ch <- event:

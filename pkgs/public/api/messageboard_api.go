@@ -128,12 +128,12 @@ func (s *MessageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.Su
 		}
 	}
 
-	// TODO dinamično moramo dodeljevati nodes.
+	// TODO dinamično moramo dodeljevati nodes. Trenutno harcoded.
 	return &pb.SubscriptionNodeResponse{
 		SubscribeToken: "token123",
 		Node: &pb.NodeInfo{
 			NodeId:  "node1",
-			Address: "localhost:50051",
+			Address: "localhost:9876",
 		},
 	}, nil
 }
@@ -159,6 +159,7 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		return status.Error(codes.InvalidArgument, "Ni podanih tem.")
 	}
 
+	// Preverimo, da obstajajo vse teme.
 	for _, topicId := range req.GetTopicId() {
 		topic := s.server_state.GetSingleTopic(topicId)
 		if topic == nil {
@@ -166,19 +167,21 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		}
 	}
 
+	// Clientov slice topicov, na katere je subscriban.
 	subscribers := make([]chan *pb.MessageEvent, 0, len(req.GetTopicId()))
 	for _, topicId := range req.GetTopicId() {
 		subscriber := s.server_state.Subscribe(topicId)
 		subscribers = append(subscribers, subscriber)
 	}
 
+	// Ko se program konča pospravimo.
 	defer func() {
 		for i, topicId := range req.GetTopicId() {
 			s.server_state.Unsubscribe(topicId, subscribers[i])
 		}
 	}()
 
-	// TODO trenutno samo prvo posluša...
+	// TODO trenutno samo prvo posluša: subscribers[0]...
 	for {
 		select {
 		case <-stream.Context().Done():
