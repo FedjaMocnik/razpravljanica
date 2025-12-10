@@ -25,7 +25,7 @@ func NewState() *State {
 		topics:      make(map[int64]*pb.Topic),
 		msgID:       1,
 		messages:    make(map[int64]*pb.Message),
-		subscribers: make(map[int64][]chan *pb.MessageEvent), // id -> inbox
+		subscribers: make(map[int64][]chan *pb.MessageEvent), // topicid -> inbox
 	}
 }
 

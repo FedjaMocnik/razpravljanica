@@ -167,6 +167,7 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		}
 	}
 
+	// TODO kaj če večkrat subscribam? Trenutno fiksen slice.
 	// Clientov slice topicov, na katere je subscriban.
 	subscribers := make([]chan *pb.MessageEvent, 0, len(req.GetTopicId()))
 	for _, topicId := range req.GetTopicId() {
