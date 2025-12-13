@@ -104,7 +104,7 @@ func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 }
 
 func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
-	// user_id v LikeMessageRequest predstavlja uporabnika, ki je všečkal sporočilo
+	// user_id v LikeMessageRequest predstavlja uporabnika, ki je všečkal sporočilo.
 	if s.stanje.GetUser(req.GetUserId()) == nil {
 		return nil, status.Error(codes.NotFound, "Uporabnik ne obstaja.")
 	}
@@ -121,15 +121,6 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 		}
 	}
 	return posodobljeno, nil
-}
-
-// ----------------------------------------------------------------------------
-// Opomba: starejši pb (in starejši client) so imeli tipkarsko napako
-// GetSubcscriptionNode. Da ostane kompatibilnost, implementiramo obe metodi.
-// ----------------------------------------------------------------------------
-
-func (s *MessageBoardServer) GetSubcscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
-	return s.GetSubscriptionNode(ctx, req)
 }
 
 func (s *MessageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
@@ -177,12 +168,12 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		return status.Error(codes.InvalidArgument, "Ni podanih tem.")
 	}
 
-	// token preverjanje (glava -> token -> tail; pri 1 strežniku je to isto)
+	// Token preverjanje (glava -> token -> tail; pri 1 strežniku je to isto).
 	if !s.stanje.PreveriSubscribeToken(req.GetSubscribeToken(), req.GetUserId(), req.GetTopicId()) {
 		return status.Error(codes.PermissionDenied, "Neveljaven subscribe token.")
 	}
 
-	// Preveri, da teme obstajajo
+	// Preverimo, da teme obstajajo.
 	for _, temaID := range req.GetTopicId() {
 		if s.stanje.GetSingleTopic(temaID) == nil {
 			return status.Errorf(codes.NotFound, "Tema %d ne obstaja.", temaID)
@@ -235,14 +226,14 @@ func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, strea
 		}
 	}()
 
-	// 1) Pošlji zgodovino (iz globalnega event loga; sequence_number ostane pravi)
+	// 1 | Pošlji zgodovino (iz globalnega event loga; sequence_number ostane pravi).
 	for _, dogodek := range zgodovinaDogodkov {
 		if err := stream.Send(dogodek); err != nil {
 			return err
 		}
 	}
 
-	// 2) Zdaj dovoli pošiljanje live dogodkov (flush + nadaljevanje)
+	// 2 | Zdaj dovoli pošiljanje live dogodkov (flush + nadaljevanje).
 	close(startLive)
 
 	for {
