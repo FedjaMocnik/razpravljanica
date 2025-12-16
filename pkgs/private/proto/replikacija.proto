@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package replikacija;
+
+option go_package = "github.com/FedjaMocnik/razpravljalnica/pkgs/private/pb";
+
+// import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// To bomo serializirali vsak event v storage.
+message LogEntry {
+  uint64 entry_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+
+  // To je dejanska operacija (npr. post, update, delete, like) pri nas kot OP_x.
+  bytes payload = 3;
+}
+
+// Forward (glava -> rep).
+
+message ForwardRequest {
+  LogEntry entry = 1;
+}
+
+message ForwardResponse {
+  bool success = 1;
+}
+
+
+
+// Commit (rep -> glava).
+
+message CommitRequest {
+  // Do katerega entry_id je vse varno replicirano.
+  uint64 committed_entry_id = 1;
+}
+
+message CommitResponse {
+  bool success = 1;
+}
+
+
+// Update / Catch up.
+
+message UpdateRequest {
+  // Zadnji entry_id, ki ga ima ta server.
+  uint64 last_known_entry_id = 1;
+}
+
+message UpdateResponse {
+  repeated LogEntry missing_entries = 1;
+}
+
+
+// Private api:
+
+service ReplicationService {
+
+  // Posreduj nov zapis naslednjemu serverju.
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
+
+  // Potrdi, da so zapisi varno replicirani.
+  rpc Commit(CommitRequest) returns (CommitResponse);
+
+  // Zahtevaj manjkajoče zapise po crashu.
+  rpc Update(UpdateRequest) returns (UpdateResponse);
+}
