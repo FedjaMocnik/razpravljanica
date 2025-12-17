@@ -12,7 +12,7 @@ message LogEntry {
   uint64 entry_id = 1;
   google.protobuf.Timestamp timestamp = 2;
 
-  // To je dejanska operacija (npr. post, update, delete, like) pri nas kot OP_x.
+  // To je dejanska operacija (npr. post, update, delete, like) pri nas kot OP_x + subscribe + ostali.
   bytes payload = 3;
 }
 
@@ -22,9 +22,9 @@ message ForwardRequest {
   LogEntry entry = 1;
 }
 
-message ForwardResponse {
-  bool success = 1;
-}
+// message ForwardResponse {
+//   bool success = 1;
+// }
 
 
 
@@ -35,9 +35,9 @@ message CommitRequest {
   uint64 committed_entry_id = 1;
 }
 
-message CommitResponse {
-  bool success = 1;
-}
+// message CommitResponse {
+//   bool success = 1;
+// }
 
 
 // Update / Catch up.
@@ -46,6 +46,19 @@ message UpdateRequest {
   // Zadnji entry_id, ki ga ima ta server.
   uint64 last_known_entry_id = 1;
 }
+
+// Kdo pade? H, vmesni ali T (tail)
+// HEAD (pade po posredovanju ali pa pred). Oboje ne moti stanja serverja. Head da CU na naslednjega. Spet če je ravno pisal dobi err in se ne propagira ali pa napiše na vse.
+// 1) user napiše in head pošlje in foraward.
+// 2) pade forward. Tudi ok.
+// TAIL. Vsi pred imajo vse kar ima tail tko da samo premaknemo ni problemov. Torej client bere dobi err in gremo naprej.
+// vmesni. Torej mora CU povedati kdo sta prejšnji in kdo je naslednji (to lahko naredit tako, da takoj ustvari nov vmesni node ali pa soseda preveže)
+// Te updati lahko grejo preko CU (torej ko en pade mora CU sporočiti nov IP + njegov zadnji committed msg). Potem prejšnja kar naredi forward request od zadnjega sosedovega committed naprej.
+// Potem sploh ne rabijo node-i tega pošiljati med sabo. Gre vse preko control plane.
+
+// Če dovolimo, da dva naenkrat pišeta je treba narediti še verzioniranje (neki + FIFO)
+// In premisliti je treba, če nekdo bere še necommitan msg potem mu lahko nastavimo dirty flag.
+// Kadar je dirty flag aktiviran —> node vpraša 
 
 message UpdateResponse {
   repeated LogEntry missing_entries = 1;
