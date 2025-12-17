@@ -14,7 +14,7 @@ import (
 func TestCreateUser(t *testing.T) {
 	s := NewMessageBoardServer()
 	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{
-		Name: "Alice",
+		Name: "Brina",
 	})
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
@@ -22,20 +22,20 @@ func TestCreateUser(t *testing.T) {
 	if user.Id != 1 {
 		t.Errorf("expected ID 1, got %d", user.Id)
 	}
-	if user.Name != "Alice" {
-		t.Errorf("expected name Alice, got %s", user.Name)
+	if user.Name != "Brina" {
+		t.Errorf("expected name Brina, got %s", user.Name)
 	}
 }
 
 func TestCreateMultipleUsers(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
 
-	user2, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user2, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCreateMultipleTopics(t *testing.T) {
 func TestPostMessage(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	msg, err := s.PostMessage(context.Background(), &pb.PostMessageRequest{
@@ -126,7 +126,7 @@ func TestPostMessage(t *testing.T) {
 func TestUpdateMessage(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	msg, _ := s.PostMessage(context.Background(), &pb.PostMessageRequest{
 		TopicId: topic.Id,
@@ -155,7 +155,7 @@ func TestUpdateMessage(t *testing.T) {
 func TestUpdateMessageNotFound(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	_, err := s.UpdateMessage(context.Background(), &pb.UpdateMessageRequest{
@@ -181,8 +181,8 @@ func TestUpdateMessageNotFound(t *testing.T) {
 func TestUpdateMessagePermissionDenied(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
-	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
+	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	msg, _ := s.PostMessage(context.Background(), &pb.PostMessageRequest{
 		TopicId: topic.Id,
@@ -213,7 +213,7 @@ func TestUpdateMessagePermissionDenied(t *testing.T) {
 func TestDeleteMessage(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	msg, _ := s.PostMessage(context.Background(), &pb.PostMessageRequest{
 		TopicId: topic.Id,
@@ -243,7 +243,7 @@ func TestDeleteMessage(t *testing.T) {
 func TestDeleteMessageNotFound(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	_, err := s.DeleteMessage(context.Background(), &pb.DeleteMessageRequest{
@@ -268,13 +268,13 @@ func TestDeleteMessageNotFound(t *testing.T) {
 func TestDeleteMessagePermissionDenied(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
-	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Bob"})
+	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
+	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	msg, _ := s.PostMessage(context.Background(), &pb.PostMessageRequest{
 		TopicId: topic.Id,
 		UserId:  user1.Id,
-		Text:    "Alice's message",
+		Text:    "Brina's message",
 	})
 
 	_, err := s.DeleteMessage(context.Background(), &pb.DeleteMessageRequest{
@@ -299,12 +299,13 @@ func TestDeleteMessagePermissionDenied(t *testing.T) {
 func TestLikeMessage(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
+
 	msg, _ := s.PostMessage(context.Background(), &pb.PostMessageRequest{
 		TopicId: topic.Id,
 		UserId:  user.Id,
-		Text:    "Like this!",
+		Text:    "Like test!",
 	})
 
 	liked, err := s.LikeMessage(context.Background(), &pb.LikeMessageRequest{
@@ -320,13 +321,30 @@ func TestLikeMessage(t *testing.T) {
 		t.Errorf("expected 1 like, got %d", liked.Likes)
 	}
 
+	// Še enkrat like, ne bi smela biti dva!
 	liked, _ = s.LikeMessage(context.Background(), &pb.LikeMessageRequest{
 		TopicId:   topic.Id,
 		MessageId: msg.Id,
 		UserId:    user.Id,
 	})
 
-	if liked.Likes != 2 {
+	if liked.Likes != 1 {
+		t.Errorf("expected 1 likes, got %d", liked.Likes)
+	}
+
+	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
+
+	liked2, err := s.LikeMessage(context.Background(), &pb.LikeMessageRequest{
+		TopicId:   topic.Id,
+		MessageId: msg.Id,
+		UserId:    user2.Id,
+	})
+
+	if err != nil {
+		t.Fatalf("LikeMessage failed: %v", err)
+	}
+
+	if liked2.Likes != 2 {
 		t.Errorf("expected 2 likes, got %d", liked.Likes)
 	}
 }
@@ -334,7 +352,7 @@ func TestLikeMessage(t *testing.T) {
 func TestLikeMessageNotFound(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	_, err := s.LikeMessage(context.Background(), &pb.LikeMessageRequest{
@@ -389,7 +407,7 @@ func TestListTopicsEmpty(t *testing.T) {
 func TestGetMessages(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	s.PostMessage(context.Background(), &pb.PostMessageRequest{
@@ -418,7 +436,7 @@ func TestGetMessages(t *testing.T) {
 func TestGetMessagesMultipleTopics(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic1, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	topic2, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Random"})
 
@@ -451,7 +469,7 @@ func TestGetMessagesMultipleTopics(t *testing.T) {
 func TestGetSubscriptionNode(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 
 	response, err := s.GetSubscriptionNode(context.Background(), &pb.SubscriptionNodeRequest{
@@ -476,7 +494,7 @@ func TestGetSubscriptionNode(t *testing.T) {
 func TestGetSubscriptionNodeNoTopics(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 
 	_, err := s.GetSubscriptionNode(context.Background(), &pb.SubscriptionNodeRequest{
 		UserId:  user.Id,
@@ -499,7 +517,7 @@ func TestGetSubscriptionNodeNoTopics(t *testing.T) {
 func TestGetSubscriptionNodeTopicNotFound(t *testing.T) {
 	s := NewMessageBoardServer()
 
-	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Alice"})
+	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 
 	_, err := s.GetSubscriptionNode(context.Background(), &pb.SubscriptionNodeRequest{
 		UserId:  user.Id,
