@@ -8,4 +8,4 @@ func main() {
 	cmd.Execute()
 }
 
-//ok
+//ni ok
