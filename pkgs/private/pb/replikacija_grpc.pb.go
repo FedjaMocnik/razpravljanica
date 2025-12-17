@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -29,9 +30,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ReplicationServiceClient interface {
 	// Posreduj nov zapis naslednjemu serverju.
-	Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error)
+	Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*CommitRequest, error)
 	// Potrdi, da so zapisi varno replicirani.
-	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
+	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Zahtevaj manjkajoče zapise po crashu.
 	Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
 }
@@ -44,9 +45,9 @@ func NewReplicationServiceClient(cc grpc.ClientConnInterface) ReplicationService
 	return &replicationServiceClient{cc}
 }
 
-func (c *replicationServiceClient) Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error) {
+func (c *replicationServiceClient) Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*CommitRequest, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ForwardResponse)
+	out := new(CommitRequest)
 	err := c.cc.Invoke(ctx, ReplicationService_Forward_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -54,9 +55,9 @@ func (c *replicationServiceClient) Forward(ctx context.Context, in *ForwardReque
 	return out, nil
 }
 
-func (c *replicationServiceClient) Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error) {
+func (c *replicationServiceClient) Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CommitResponse)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, ReplicationService_Commit_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -79,9 +80,9 @@ func (c *replicationServiceClient) Update(ctx context.Context, in *UpdateRequest
 // for forward compatibility.
 type ReplicationServiceServer interface {
 	// Posreduj nov zapis naslednjemu serverju.
-	Forward(context.Context, *ForwardRequest) (*ForwardResponse, error)
+	Forward(context.Context, *ForwardRequest) (*CommitRequest, error)
 	// Potrdi, da so zapisi varno replicirani.
-	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
+	Commit(context.Context, *CommitRequest) (*emptypb.Empty, error)
 	// Zahtevaj manjkajoče zapise po crashu.
 	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
 	mustEmbedUnimplementedReplicationServiceServer()
@@ -94,10 +95,10 @@ type ReplicationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedReplicationServiceServer struct{}
 
-func (UnimplementedReplicationServiceServer) Forward(context.Context, *ForwardRequest) (*ForwardResponse, error) {
+func (UnimplementedReplicationServiceServer) Forward(context.Context, *ForwardRequest) (*CommitRequest, error) {
 	return nil, status.Error(codes.Unimplemented, "method Forward not implemented")
 }
-func (UnimplementedReplicationServiceServer) Commit(context.Context, *CommitRequest) (*CommitResponse, error) {
+func (UnimplementedReplicationServiceServer) Commit(context.Context, *CommitRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Commit not implemented")
 }
 func (UnimplementedReplicationServiceServer) Update(context.Context, *UpdateRequest) (*UpdateResponse, error) {

@@ -9,7 +9,7 @@ package pb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	_ "google.golang.org/protobuf/types/known/emptypb"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -28,7 +28,7 @@ type LogEntry struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	EntryId   uint64                 `protobuf:"varint,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
 	Timestamp *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	// To je dejanska operacija (npr. post, update, delete, like) pri nas kot OP_x.
+	// To je dejanska operacija (npr. post, update, delete, like) pri nas kot OP_x + subscribe + ostali.
 	Payload       []byte `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -129,50 +129,6 @@ func (x *ForwardRequest) GetEntry() *LogEntry {
 	return nil
 }
 
-type ForwardResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ForwardResponse) Reset() {
-	*x = ForwardResponse{}
-	mi := &file_replikacija_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ForwardResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ForwardResponse) ProtoMessage() {}
-
-func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_replikacija_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
-func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_replikacija_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *ForwardResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
 type CommitRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Do katerega entry_id je vse varno replicirano.
@@ -183,7 +139,7 @@ type CommitRequest struct {
 
 func (x *CommitRequest) Reset() {
 	*x = CommitRequest{}
-	mi := &file_replikacija_proto_msgTypes[3]
+	mi := &file_replikacija_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -195,7 +151,7 @@ func (x *CommitRequest) String() string {
 func (*CommitRequest) ProtoMessage() {}
 
 func (x *CommitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_replikacija_proto_msgTypes[3]
+	mi := &file_replikacija_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -208,7 +164,7 @@ func (x *CommitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitRequest.ProtoReflect.Descriptor instead.
 func (*CommitRequest) Descriptor() ([]byte, []int) {
-	return file_replikacija_proto_rawDescGZIP(), []int{3}
+	return file_replikacija_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CommitRequest) GetCommittedEntryId() uint64 {
@@ -216,50 +172,6 @@ func (x *CommitRequest) GetCommittedEntryId() uint64 {
 		return x.CommittedEntryId
 	}
 	return 0
-}
-
-type CommitResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CommitResponse) Reset() {
-	*x = CommitResponse{}
-	mi := &file_replikacija_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CommitResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CommitResponse) ProtoMessage() {}
-
-func (x *CommitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_replikacija_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CommitResponse.ProtoReflect.Descriptor instead.
-func (*CommitResponse) Descriptor() ([]byte, []int) {
-	return file_replikacija_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *CommitResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
 }
 
 type UpdateRequest struct {
@@ -272,7 +184,7 @@ type UpdateRequest struct {
 
 func (x *UpdateRequest) Reset() {
 	*x = UpdateRequest{}
-	mi := &file_replikacija_proto_msgTypes[5]
+	mi := &file_replikacija_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -284,7 +196,7 @@ func (x *UpdateRequest) String() string {
 func (*UpdateRequest) ProtoMessage() {}
 
 func (x *UpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_replikacija_proto_msgTypes[5]
+	mi := &file_replikacija_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -297,7 +209,7 @@ func (x *UpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateRequest.ProtoReflect.Descriptor instead.
 func (*UpdateRequest) Descriptor() ([]byte, []int) {
-	return file_replikacija_proto_rawDescGZIP(), []int{5}
+	return file_replikacija_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *UpdateRequest) GetLastKnownEntryId() uint64 {
@@ -307,6 +219,7 @@ func (x *UpdateRequest) GetLastKnownEntryId() uint64 {
 	return 0
 }
 
+// TODO: del CU: naj ostane unimplemented.
 type UpdateResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	MissingEntries []*LogEntry            `protobuf:"bytes,1,rep,name=missing_entries,json=missingEntries,proto3" json:"missing_entries,omitempty"`
@@ -316,7 +229,7 @@ type UpdateResponse struct {
 
 func (x *UpdateResponse) Reset() {
 	*x = UpdateResponse{}
-	mi := &file_replikacija_proto_msgTypes[6]
+	mi := &file_replikacija_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -328,7 +241,7 @@ func (x *UpdateResponse) String() string {
 func (*UpdateResponse) ProtoMessage() {}
 
 func (x *UpdateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_replikacija_proto_msgTypes[6]
+	mi := &file_replikacija_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -341,7 +254,7 @@ func (x *UpdateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateResponse.ProtoReflect.Descriptor instead.
 func (*UpdateResponse) Descriptor() ([]byte, []int) {
-	return file_replikacija_proto_rawDescGZIP(), []int{6}
+	return file_replikacija_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *UpdateResponse) GetMissingEntries() []*LogEntry {
@@ -361,20 +274,16 @@ const file_replikacija_proto_rawDesc = "" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\"=\n" +
 	"\x0eForwardRequest\x12+\n" +
-	"\x05entry\x18\x01 \x01(\v2\x15.replikacija.LogEntryR\x05entry\"+\n" +
-	"\x0fForwardResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"=\n" +
+	"\x05entry\x18\x01 \x01(\v2\x15.replikacija.LogEntryR\x05entry\"=\n" +
 	"\rCommitRequest\x12,\n" +
-	"\x12committed_entry_id\x18\x01 \x01(\x04R\x10committedEntryId\"*\n" +
-	"\x0eCommitResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\">\n" +
+	"\x12committed_entry_id\x18\x01 \x01(\x04R\x10committedEntryId\">\n" +
 	"\rUpdateRequest\x12-\n" +
 	"\x13last_known_entry_id\x18\x01 \x01(\x04R\x10lastKnownEntryId\"P\n" +
 	"\x0eUpdateResponse\x12>\n" +
-	"\x0fmissing_entries\x18\x01 \x03(\v2\x15.replikacija.LogEntryR\x0emissingEntries2\xe0\x01\n" +
-	"\x12ReplicationService\x12D\n" +
-	"\aForward\x12\x1b.replikacija.ForwardRequest\x1a\x1c.replikacija.ForwardResponse\x12A\n" +
-	"\x06Commit\x12\x1a.replikacija.CommitRequest\x1a\x1b.replikacija.CommitResponse\x12A\n" +
+	"\x0fmissing_entries\x18\x01 \x03(\v2\x15.replikacija.LogEntryR\x0emissingEntries2\xd9\x01\n" +
+	"\x12ReplicationService\x12B\n" +
+	"\aForward\x12\x1b.replikacija.ForwardRequest\x1a\x1a.replikacija.CommitRequest\x12<\n" +
+	"\x06Commit\x12\x1a.replikacija.CommitRequest\x1a\x16.google.protobuf.Empty\x12A\n" +
 	"\x06Update\x12\x1a.replikacija.UpdateRequest\x1a\x1b.replikacija.UpdateResponseB8Z6github.com/FedjaMocnik/razpravljalnica/pkgs/private/pbb\x06proto3"
 
 var (
@@ -389,27 +298,26 @@ func file_replikacija_proto_rawDescGZIP() []byte {
 	return file_replikacija_proto_rawDescData
 }
 
-var file_replikacija_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_replikacija_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_replikacija_proto_goTypes = []any{
 	(*LogEntry)(nil),              // 0: replikacija.LogEntry
 	(*ForwardRequest)(nil),        // 1: replikacija.ForwardRequest
-	(*ForwardResponse)(nil),       // 2: replikacija.ForwardResponse
-	(*CommitRequest)(nil),         // 3: replikacija.CommitRequest
-	(*CommitResponse)(nil),        // 4: replikacija.CommitResponse
-	(*UpdateRequest)(nil),         // 5: replikacija.UpdateRequest
-	(*UpdateResponse)(nil),        // 6: replikacija.UpdateResponse
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*CommitRequest)(nil),         // 2: replikacija.CommitRequest
+	(*UpdateRequest)(nil),         // 3: replikacija.UpdateRequest
+	(*UpdateResponse)(nil),        // 4: replikacija.UpdateResponse
+	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 6: google.protobuf.Empty
 }
 var file_replikacija_proto_depIdxs = []int32{
-	7, // 0: replikacija.LogEntry.timestamp:type_name -> google.protobuf.Timestamp
+	5, // 0: replikacija.LogEntry.timestamp:type_name -> google.protobuf.Timestamp
 	0, // 1: replikacija.ForwardRequest.entry:type_name -> replikacija.LogEntry
 	0, // 2: replikacija.UpdateResponse.missing_entries:type_name -> replikacija.LogEntry
 	1, // 3: replikacija.ReplicationService.Forward:input_type -> replikacija.ForwardRequest
-	3, // 4: replikacija.ReplicationService.Commit:input_type -> replikacija.CommitRequest
-	5, // 5: replikacija.ReplicationService.Update:input_type -> replikacija.UpdateRequest
-	2, // 6: replikacija.ReplicationService.Forward:output_type -> replikacija.ForwardResponse
-	4, // 7: replikacija.ReplicationService.Commit:output_type -> replikacija.CommitResponse
-	6, // 8: replikacija.ReplicationService.Update:output_type -> replikacija.UpdateResponse
+	2, // 4: replikacija.ReplicationService.Commit:input_type -> replikacija.CommitRequest
+	3, // 5: replikacija.ReplicationService.Update:input_type -> replikacija.UpdateRequest
+	2, // 6: replikacija.ReplicationService.Forward:output_type -> replikacija.CommitRequest
+	6, // 7: replikacija.ReplicationService.Commit:output_type -> google.protobuf.Empty
+	4, // 8: replikacija.ReplicationService.Update:output_type -> replikacija.UpdateResponse
 	6, // [6:9] is the sub-list for method output_type
 	3, // [3:6] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -428,7 +336,7 @@ func file_replikacija_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_replikacija_proto_rawDesc), len(file_replikacija_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

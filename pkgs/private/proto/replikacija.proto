@@ -4,7 +4,7 @@ package replikacija;
 
 option go_package = "github.com/FedjaMocnik/razpravljalnica/pkgs/private/pb";
 
-// import "google/protobuf/empty.proto";
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 // To bomo serializirali vsak event v storage.
@@ -60,6 +60,7 @@ message UpdateRequest {
 // In premisliti je treba, če nekdo bere še necommitan msg potem mu lahko nastavimo dirty flag.
 // Kadar je dirty flag aktiviran —> node vpraša 
 
+// TODO: del CU: naj ostane unimplemented.
 message UpdateResponse {
   repeated LogEntry missing_entries = 1;
 }
@@ -70,10 +71,10 @@ message UpdateResponse {
 service ReplicationService {
 
   // Posreduj nov zapis naslednjemu serverju.
-  rpc Forward(ForwardRequest) returns (ForwardResponse);
+  rpc Forward(ForwardRequest) returns (CommitRequest);
 
   // Potrdi, da so zapisi varno replicirani.
-  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Commit(CommitRequest) returns (google.protobuf.Empty);
 
   // Zahtevaj manjkajoče zapise po crashu.
   rpc Update(UpdateRequest) returns (UpdateResponse);
