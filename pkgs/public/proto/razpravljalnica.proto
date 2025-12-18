@@ -60,7 +60,7 @@ service  MessageBoard{
   // Creates a new topic to which users can post messages
   rpc CreateTopic(CreateTopicRequest) returns (Topic);
 
-  // Post a message to a topic; Succed only if the User and the Topic exist in the data base.
+  // Post a message to a topic; Succeed only if the User and the Topic exist in the data base.
   rpc PostMessage(PostMessageRequest) returns (Message);
 
   // Update an existing message. Allowed only for the user who posted the message.
