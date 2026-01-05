@@ -35,6 +35,8 @@ func Zazeni(naslov, nodeID, chainSpec, tokenSecret string) error {
 		return err
 	}
 
+	// Če imamo naslov in ni enak željenemu -> err.
+	// To se ne zdi zelo varno.
 	if self.GetAddress() != "" && self.GetAddress() != naslov {
 		return fmt.Errorf("naslov (%s) se ne ujema s chain konfiguracijo za %s (%s)", naslov, nodeID, self.GetAddress())
 	}

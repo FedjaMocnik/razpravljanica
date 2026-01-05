@@ -106,7 +106,7 @@ func (s *MessageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserR
 	defer s.writeMu.Unlock()
 	uporabnik := &pb.User{Id: s.stanje.GetUserID(), Name: req.GetName()}
 	if s.repl != nil {
-		// Replicate first; apply to local state only after commit.
+		// Prvo replikacija. Potem apliciramo v lokalno bazo po commitu.
 		if err := s.repl.ReplicateUser(ctx, uporabnik); err != nil {
 			return nil, status.Error(codes.Internal, "Napaka pri replikaciji uporabnika.")
 		}

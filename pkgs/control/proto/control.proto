@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package controlplane;
+
+message NodeInfo {
+  string node_id = 1;
+  string address = 2;
+}
+
+
+service ControlPlaneService {
+
+  // Periodični Heartbeat.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Torej spremebe chaina: Server se mu pridruži ali zapusti.
+  rpc JoinChain(JoinChainRequest) returns (JoinChainResponse);
+
+  // Pošljemo serverju nove sosede.
+  rpc UpdateNeighbors(UpdateNeighborsRequest)
+      returns (UpdateNeighborsResponse);
+
+  // torej ker control ve nek chain je to ubistvu request, če ga še kdo potrebuje.
+  rpc GetChain(GetChainRequest) returns (GetChainResponse);
+}
+
+
+message HeartbeatRequest {
+  string node_id = 1;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+}
+
+message JoinChainRequest {
+  NodeInfo node = 1;
+}
+
+// Primeri: A -> B -> C
+
+// Nov server:
+// D se pridruži. prev=B, next=C, sync_from=B
+// UpdateNeighbors(B, prev=A, next=D)
+// UpdateNeighbors(C, prev=D, next=nil)
+
+// En umre (B):
+// UpdateNeighbors(A, prev=nil, next=C)
+// UpdateNeighbors(C, prev=A, next=nil)
+
+message JoinChainResponse {
+  NodeInfo previous = 1;   // empty = head
+  NodeInfo next = 2;       // empty = tail
+  NodeInfo sync_from = 3;  // koga prosimo za stvari (previous)
+}
+
+
+message UpdateNeighborsRequest {
+  NodeInfo self = 1;
+  NodeInfo previous = 2; // empty = head
+  NodeInfo next = 3;     // empty = tail
+}
+
+message UpdateNeighborsResponse {
+  bool ok = 1;
+}
+
+
+message GetChainRequest {}
+
+message GetChainResponse {
+  repeated NodeInfo chain = 1;
+  NodeInfo head = 2;
+  NodeInfo tail = 3;
+}

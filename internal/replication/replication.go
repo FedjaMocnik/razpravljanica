@@ -34,6 +34,7 @@ import (
 //   2) Follower: entry aplicira na svoj state (v istem vrstnem redu) in ga posreduje naslednjemu.
 //   3) TAIL: po prejemu Forward entry takoj šteje kot committed in sproži RPC Commit nazaj po verigi.
 //   4) HEAD: ob prejemu Commit sprosti čakanje write operacije (waitForCommit).
+//   TODO: Ne čakamo commita (implementacija verzioniranja).
 //
 // Update RPC je namenjen bootstrap/catch-up: predhodnik vrne vse manjkajoče vnose od lastKnownEntryId dalje.
 //
@@ -96,6 +97,7 @@ func NewManager(cfg Config, st *storage.State) *Manager {
 		readyCh:  make(chan struct{}),
 	}
 	// Glava (ali vozlišče brez predhodnika) je takoj pripravljeno.
+	// TODO: Kaj če pride do tega, da sta dva takoj redi? Torej Glava in en, ki ponesreči dobi prev = ""?
 	if cfg.IsHead || cfg.PrevAddr == "" {
 		m.markReady()
 	}
@@ -426,16 +428,16 @@ func (m *Manager) Update(ctx context.Context, req *privatepb.UpdateRequest) (*pr
 	defer m.mu.Unlock()
 
 	if last >= m.lastApplied {
+		// Krajšnica: sledilec trdi, da ima vse.
 		return &privatepb.UpdateResponse{MissingEntries: nil}, nil
 	}
 	// entry_id je logično 1-indeksiran, v slice-u pa je shranjen 0-indeksirano.
-	start := int(last)
-	if start < 0 {
-		start = 0
-	}
-	if start > len(m.log) {
-		start = len(m.log)
-	}
+	// TODO: 0 indeksiraj entry_id.
+
+	// Zagotovimo, da je start \in [0, len(m.log)].
+	start := max(0, int(last))
+	start = min(len(m.log), start)
+
 	out := make([]*privatepb.LogEntry, 0, len(m.log)-start)
 	for i := start; i < len(m.log); i++ {
 		out = append(out, proto.Clone(m.log[i]).(*privatepb.LogEntry))
