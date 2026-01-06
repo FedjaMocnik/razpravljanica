@@ -339,6 +339,13 @@ func (s *State) GetTopicID() int64 {
 	return id
 }
 
+func (s *State) GetTopic(topicID int64) *pb.Topic {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.topics[topicID]
+}
+
 func (s *State) AddTopic(topic *pb.Topic) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
