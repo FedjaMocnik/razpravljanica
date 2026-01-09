@@ -12,8 +12,13 @@ package replication
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/FedjaMocnik/razpravljalnica/internal/storage"
@@ -24,6 +29,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -61,11 +67,16 @@ type Manager struct {
 	lastCommitted uint64                // največji EntryId, za katerega smo prejeli commit
 	nextEntryID   uint64                // generator EntryId; uporablja samo HEAD
 
-	waiters map[uint64]chan struct{} // HEAD: kanali za čakanje na commit posameznega entry-ja
+	waiters map[uint64]chan error // HEAD: kanali za čakanje na commit posameznega entry-ja
 
 	// Pripravljenost (bootstrap): sledilna vozlišča niso "pripravljena", dokler ne dohitevajo svojega predhodnika.
 	readyOnce sync.Once
 	readyCh   chan struct{}
+
+	// Dinamična re-konfiguracija: ko se veriga spremeni (npr. odpove vmesni node),
+	// lahko sosedi potrebujejo "catch-up". Med catch-up fazo lahko začasno
+	// blokiramo naročnine/branja na tem node-u.
+	syncing uint32 // 0 = ne, 1 = da
 
 	// gRPC odjemalci (leno inicializirani)
 	nextConn   *grpc.ClientConn
@@ -83,6 +94,22 @@ type Config struct {
 	IsTail   bool
 }
 
+// ErrWriteAborted se vrne pisalnim operacijam, ki čakajo na commit,
+// kadar pride do re-konfiguracije verige in se ne-commitani vnosi zavržejo.
+var ErrWriteAborted = errors.New("write aborted: topology changed before commit")
+
+func signalWaiter(ch chan error, err error) {
+	if ch == nil {
+		return
+	}
+	// Kanal je bufferiran, da se izognemo deadlocku, če je receiver ravno odpovedal.
+	select {
+	case ch <- err:
+	default:
+	}
+	close(ch)
+}
+
 func NewManager(cfg Config, st *storage.State) *Manager {
 	m := &Manager{
 		nodeID:   cfg.NodeID,
@@ -93,7 +120,7 @@ func NewManager(cfg Config, st *storage.State) *Manager {
 		nextAddr: cfg.NextAddr,
 		state:    st,
 		log:      make([]*privatepb.LogEntry, 0, 1024),
-		waiters:  make(map[uint64]chan struct{}),
+		waiters:  make(map[uint64]chan error),
 		readyCh:  make(chan struct{}),
 	}
 	// Glava (ali vozlišče brez predhodnika) je takoj pripravljeno.
@@ -107,11 +134,203 @@ func NewManager(cfg Config, st *storage.State) *Manager {
 // IsReady vrne true, ko je vozlišče pripravljeno na delo (follower je najprej bootstrap-an).
 
 func (m *Manager) IsReady() bool {
+	if atomic.LoadUint32(&m.syncing) == 1 {
+		return false
+	}
 	select {
 	case <-m.readyCh:
 		return true
 	default:
 		return false
+	}
+}
+
+// UpdateTopology spremeni soseda (prev/next) in vlogo (head/tail) med delovanjem.
+// Vrne true, če se je previous naslov spremenil (kar običajno pomeni, da je potreben catch-up).
+func (m *Manager) UpdateTopology(prevAddr, nextAddr string, isHead, isTail bool) (prevChanged bool) {
+	var (
+		doRebuild    bool
+		replayLog    []*privatepb.LogEntry
+		committedID  uint64
+		becameHead   bool
+		becameTail   bool
+		abortWaiters []chan error
+	)
+
+	m.mu.Lock()
+
+	oldIsHead := m.isHead
+	oldIsTail := m.isTail
+	oldNextAddr := m.nextAddr
+	becameHead = isHead && !oldIsHead
+	becameTail = isTail && !oldIsTail
+	nextChanged := false
+
+	if m.prevAddr != prevAddr {
+		prevChanged = true
+		m.prevAddr = prevAddr
+		if m.prevConn != nil {
+			_ = m.prevConn.Close()
+			m.prevConn, m.prevClient = nil, nil
+		}
+	}
+	if m.nextAddr != nextAddr {
+		nextChanged = true
+		m.nextAddr = nextAddr
+		if m.nextConn != nil {
+			_ = m.nextConn.Close()
+			m.nextConn, m.nextClient = nil, nil
+		}
+	}
+
+	// Poseben primer: če smo HEAD in ostanemo HEAD, a se spremeni "next" (npr. odpove sredinski node
+	// in veriga se preveže), lahko obstajajo ne-commitani vnosi, ki nikoli ne bodo commitani.
+	// Takšne vnose moramo zavreči (truncate) in pisalce, ki čakajo na commit, obvestiti z napako.
+	headNextChanged := oldIsHead && isHead && (oldNextAddr != nextAddr) && nextChanged
+
+	// Če se spremenijo vloge (postanemo HEAD ali TAIL), moramo biti commit-safe:
+	// - nikoli ne smemo "commitati" ne-commit-anih entry-jev
+	// - ob preklopu lahko obstajajo aplicirani, a še ne-commitani vnosi (lastApplied > lastCommitted),
+	//   ki jih je treba rollbackati (truncate) in ponovno zgraditi stanje iz commit-anega loga.
+	if becameHead || becameTail || headNextChanged {
+		if m.lastApplied > m.lastCommitted {
+			// log slice je 1:1 z EntryId (EntryId=1 je index 0), zato je dolžina commit-anega dela == lastCommitted.
+			if int(m.lastCommitted) < len(m.log) {
+				m.log = m.log[:int(m.lastCommitted)]
+			}
+			m.lastApplied = m.lastCommitted
+		}
+		// Če postanemo head (ali ostanemo head, a se next spremeni), naj generator nadaljuje od zadnjega COMMIT-anega EntryId.
+		if becameHead || headNextChanged {
+			m.nextEntryID = m.lastCommitted
+		}
+		// Ob preklopu v HEAD resetiramo waiterje (na followerju jih ne bi smelo biti).
+		if becameHead {
+			m.waiters = make(map[uint64]chan error)
+		}
+		// Ob re-konfiguraciji HEAD-a ob spremembi next: abortiramo vse waiterje za ne-commitane entry-je.
+		if headNextChanged {
+			for id, ch := range m.waiters {
+				if id > m.lastCommitted {
+					abortWaiters = append(abortWaiters, ch)
+					delete(m.waiters, id)
+				}
+			}
+		}
+		committedID = m.lastCommitted
+
+		// Snapshot commit-anega loga za replay (zunaj m.mu).
+		replayLog = make([]*privatepb.LogEntry, len(m.log))
+		for i := range m.log {
+			replayLog[i] = proto.Clone(m.log[i]).(*privatepb.LogEntry)
+		}
+		doRebuild = true
+	}
+
+	if isHead || prevAddr == "" {
+		m.markReady()
+	}
+	m.isHead = isHead
+	m.isTail = isTail
+	m.mu.Unlock()
+
+	for _, ch := range abortWaiters {
+		signalWaiter(ch, ErrWriteAborted)
+	}
+
+	if doRebuild {
+		if err := m.rebuildStateFromLog(replayLog, committedID); err != nil {
+			log.Printf("node %s: rebuild state failed (committed=%d): %v", m.nodeID, committedID, err)
+		}
+	}
+	return prevChanged
+}
+
+// rebuildStateFromLog popolnoma resetira lokalni State in ga ponovno zgradi iz commit-anega dela loga.
+// Uporabimo ga pri re-konfiguraciji (npr. ko node postane nov HEAD/TAIL), da odstranimo ne-commitane spremembe.
+func (m *Manager) rebuildStateFromLog(entries []*privatepb.LogEntry, committed uint64) error {
+	if m.state == nil {
+		return nil
+	}
+	m.state.ResetAll()
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		payloadMsg, err := decodePayload(e.Payload)
+		if err != nil {
+			return err
+		}
+		switch msg := payloadMsg.(type) {
+		case *publicpb.User:
+			m.state.UpsertUser(msg)
+		case *publicpb.Topic:
+			m.state.UpsertTopic(msg)
+		case *publicpb.MessageEvent:
+			if err := m.state.ApplyReplicatedEvent(msg); err != nil {
+				return err
+			}
+		case *structpb.Struct:
+			fields := msg.GetFields()
+			kindV, ok := fields["kind"]
+			if !ok {
+				return fmt.Errorf("struct payload brez 'kind'")
+			}
+			kind := kindV.GetStringValue()
+			switch kind {
+			case "like_action":
+				b64V, ok := fields["event_b64"]
+				if !ok {
+					return fmt.Errorf("like_action brez event_b64")
+				}
+				raw, err := base64.StdEncoding.DecodeString(b64V.GetStringValue())
+				if err != nil {
+					return err
+				}
+				var ev publicpb.MessageEvent
+				if err := proto.Unmarshal(raw, &ev); err != nil {
+					return err
+				}
+				liker := int64(fields["liker_id"].GetNumberValue())
+				topicID := int64(fields["topic_id"].GetNumberValue())
+				messageID := int64(fields["message_id"].GetNumberValue())
+				if err := m.state.ApplyReplicatedEventWithMeta(&ev, &storage.LikeKey{TopicID: topicID, MessageID: messageID, UserID: liker}); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("nepodprta struct payload vrsta: %q", kind)
+			}
+		default:
+			return fmt.Errorf("neznan payload")
+		}
+	}
+	// Vse, kar smo replay-ali, je commitano do 'committed'.
+	m.state.AdvanceCommittedSequence(int64(committed))
+	return nil
+}
+
+// ResyncFromPrev izvede catch-up (Update) proti trenutnemu previous. Med resync fazo je IsReady=false.
+func (m *Manager) ResyncFromPrev(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	atomic.StoreUint32(&m.syncing, 1)
+	defer atomic.StoreUint32(&m.syncing, 0)
+
+	// Ponovi, dokler ne dobimo praznega seznama (stabilno stanje), ali dokler ne poteče ctx.
+	for {
+		cnt, err := m.catchUpOnceCount(ctx)
+		if err != nil {
+			return err
+		}
+		if cnt == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
@@ -184,7 +403,9 @@ func (m *Manager) BootstrapFromPrev(ctx context.Context) error {
 
 	// Ob zagonu poskusimo večkrat.
 	for i := 0; i < 20; i++ {
-		if err := m.catchUpOnce(ctx); err == nil {
+		if _, err := m.catchUpOnceCount(ctx); err == nil {
+			// še enkrat do stabilnega stanja
+			_ = m.ResyncFromPrev(ctx)
 			m.markReady()
 			return nil
 		}
@@ -197,29 +418,95 @@ func (m *Manager) BootstrapFromPrev(ctx context.Context) error {
 	return fmt.Errorf("bootstrap ni uspel (prev=%s)", prevAddr)
 }
 
-// catchUpOnce zahteva od predhodnika manjkajoče entry-je (Update) in jih aplicira zaporedno.
-
-func (m *Manager) catchUpOnce(ctx context.Context) error {
+// catchUpOnceCount zahteva od predhodnika manjkajoče entry-je (Update) in jih aplicira zaporedno.
+// Vrne koliko entry-jev je bilo apliciranih.
+func (m *Manager) catchUpOnceCount(ctx context.Context) (int, error) {
+	// Med catch-up fazo se opremo samo na COMMIT-ani del lokalnega loga.
+	// Če obstajajo ne-commitani vnosi (npr. po re-konfiguraciji ali po delnem crash recovery),
+	// jih ignoriramo/trunciramo, da se ne bi kasneje pomotoma "legalizirali".
 	m.mu.Lock()
-	last := m.lastApplied
+	if m.lastApplied > m.lastCommitted {
+		if int(m.lastCommitted) < len(m.log) {
+			m.log = m.log[:int(m.lastCommitted)]
+		}
+		m.lastApplied = m.lastCommitted
+	}
+	last := m.lastCommitted
 	client, err := m.dialPrevLocked()
 	m.mu.Unlock()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if client == nil {
-		return nil
+		return 0, nil
 	}
 	resp, err := client.Update(ctx, &privatepb.UpdateRequest{LastKnownEntryId: last})
 	if err != nil {
-		return err
+		return 0, err
 	}
-	for _, e := range resp.GetMissingEntries() {
+	missing := resp.GetMissingEntries()
+	for _, e := range missing {
 		if err := m.applyEntry(ctx, e, true); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+
+	// Vsi entry-ji, ki jih dobimo preko Update, so po definiciji commitani (Update vrača le commitane vnose).
+	// Zato lahko lokalno napredujemo committed marker do zadnjega apliciranega entry-ja.
+	if len(missing) > 0 {
+		m.mu.Lock()
+		if m.lastApplied > m.lastCommitted {
+			m.lastCommitted = m.lastApplied
+		}
+		committed := m.lastCommitted
+		m.mu.Unlock()
+		m.state.AdvanceCommittedSequence(int64(committed))
+	}
+
+	return len(missing), nil
+}
+
+func (m *Manager) isRetryableForwardErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Naš Forward vrača plain error; zato preverimo message.
+	msg := err.Error()
+	if strings.Contains(msg, "out-of-order") {
+		return true
+	}
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "Unavailable") {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) forwardWithRetry(ctx context.Context, client privatepb.ReplicationServiceClient, entry *privatepb.LogEntry) error {
+	if client == nil {
+		return nil
+	}
+	backoff := 80 * time.Millisecond
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, err := client.Forward(ctx, &privatepb.ForwardRequest{Entry: entry})
+		if err == nil {
+			return nil
+		}
+		if !m.isRetryableForwardErr(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			if backoff < 500*time.Millisecond {
+				backoff *= 2
+			}
+		}
+	}
 }
 
 func encodePayload(msg proto.Message) ([]byte, error) {
@@ -236,7 +523,7 @@ func decodePayload(b []byte) (proto.Message, error) {
 		return nil, err
 	}
 	// Pričakujemo le majhen, fiksen nabor tipov.
-	// Najprej poskusimo MessageEvent, nato User, nato Topic.
+	// Najprej poskusimo MessageEvent, nato User, Topic, na koncu še structpb.Struct (privatni payload).
 	var ev publicpb.MessageEvent
 	if a.MessageIs(&ev) {
 		if err := a.UnmarshalTo(&ev); err != nil {
@@ -257,6 +544,13 @@ func decodePayload(b []byte) (proto.Message, error) {
 			return nil, err
 		}
 		return &t, nil
+	}
+	var st structpb.Struct
+	if a.MessageIs(&st) {
+		if err := a.UnmarshalTo(&st); err != nil {
+			return nil, err
+		}
+		return &st, nil
 	}
 	return nil, fmt.Errorf("nepodprta payload vrsta: %s", a.TypeUrl)
 }
@@ -301,6 +595,39 @@ func (m *Manager) applyEntry(ctx context.Context, entry *privatepb.LogEntry, for
 		if err := m.state.ApplyReplicatedEvent(msg); err != nil {
 			return err
 		}
+	case *structpb.Struct:
+		// Poseben "private" payload (npr. LIKE z liker_id za deterministično deduplikacijo).
+		fields := msg.GetFields()
+		kindV, ok := fields["kind"]
+		if !ok {
+			return fmt.Errorf("struct payload brez 'kind'")
+		}
+		kind := kindV.GetStringValue()
+		switch kind {
+		case "like_action":
+			b64V, ok := fields["event_b64"]
+			if !ok {
+				return fmt.Errorf("like_action brez event_b64")
+			}
+			b64 := b64V.GetStringValue()
+			raw, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				return err
+			}
+			var ev publicpb.MessageEvent
+			if err := proto.Unmarshal(raw, &ev); err != nil {
+				return err
+			}
+			liker := int64(fields["liker_id"].GetNumberValue())
+			topicID := int64(fields["topic_id"].GetNumberValue())
+			messageID := int64(fields["message_id"].GetNumberValue())
+			if err := m.state.ApplyReplicatedEventWithMeta(&ev, &storage.LikeKey{TopicID: topicID, MessageID: messageID, UserID: liker}); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("nepodprta struct payload vrsta: %q", kind)
+		}
+
 	default:
 		return fmt.Errorf("neznan payload")
 	}
@@ -314,8 +641,7 @@ func (m *Manager) applyEntry(ctx context.Context, entry *privatepb.LogEntry, for
 			return err
 		}
 		if client != nil {
-			_, err := client.Forward(ctx, &privatepb.ForwardRequest{Entry: entry})
-			if err != nil {
+			if err := m.forwardWithRetry(ctx, client, entry); err != nil {
 				return err
 			}
 		}
@@ -350,11 +676,26 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 
 	var committed uint64
 	if client != nil {
-		resp, err := client.Forward(ctx, req)
-		if err != nil {
-			return nil, err
+		backoff := 80 * time.Millisecond
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			resp, err := client.Forward(ctx, req)
+			if err == nil {
+				committed = resp.GetCommittedEntryId()
+				break
+			}
+			if !m.isRetryableForwardErr(err) || time.Now().After(deadline) {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				if backoff < 500*time.Millisecond {
+					backoff *= 2
+				}
+			}
 		}
-		committed = resp.GetCommittedEntryId()
 	}
 
 	if isTail {
@@ -367,6 +708,8 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 			m.lastCommitted = committed
 		}
 		m.mu.Unlock()
+		// Na tail-u je entry commit-an takoj.
+		m.state.AdvanceCommittedSequence(int64(committed))
 		if prevClient != nil {
 			// sinhron commit za ohranitev vrstnega reda
 			_, _ = prevClient.Commit(ctx, &privatepb.CommitRequest{CommittedEntryId: committed})
@@ -390,7 +733,7 @@ func (m *Manager) Commit(ctx context.Context, req *privatepb.CommitRequest) (*em
 
 	// Posodobi committed stanje in sproži čakajoče (waiterje).
 	// Commit je lahko prejet večkrat (npr. zaradi retryjev); zato lastCommitted posodobimo monotono.
-	var toSignal []chan struct{}
+	var toSignal []chan error
 	m.mu.Lock()
 	if commitID > m.lastCommitted {
 		m.lastCommitted = commitID
@@ -405,11 +748,13 @@ func (m *Manager) Commit(ctx context.Context, req *privatepb.CommitRequest) (*em
 	}
 	prevClient, err := m.dialPrevLocked()
 	m.mu.Unlock()
+	// Posodobi vidnost commit-anih dogodkov (gating naročnin + deduplikacija všečkov).
+	m.state.AdvanceCommittedSequence(int64(commitID))
 	if err != nil {
 		return nil, err
 	}
 	for _, ch := range toSignal {
-		close(ch)
+		signalWaiter(ch, nil)
 	}
 
 	// Posreduj nazaj po verigi.
@@ -427,19 +772,27 @@ func (m *Manager) Update(ctx context.Context, req *privatepb.UpdateRequest) (*pr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if last >= m.lastApplied {
-		// Krajšnica: sledilec trdi, da ima vse.
+	// V catch-up/Update vračamo **samo commitane** vnose.
+	// To prepreči, da bi se ne-commitani vnosi (npr. po failed Forward na HEAD-u) razširili v verigo.
+	// Zato se opiramo na lastCommitted, ne na lastApplied.
+	committed := m.lastCommitted
+	if last >= committed {
+		// Krajšnica: sledilec trdi, da ima vse commitano.
 		return &privatepb.UpdateResponse{MissingEntries: nil}, nil
 	}
 	// entry_id je logično 1-indeksiran, v slice-u pa je shranjen 0-indeksirano.
 	// TODO: 0 indeksiraj entry_id.
 
-	// Zagotovimo, da je start \in [0, len(m.log)].
-	start := max(0, int(last))
-	start = min(len(m.log), start)
+	// Poskrbimo, da ne presežemo commitane dolžine loga.
+	// log slice je 1:1 z EntryId (EntryId=1 je index 0).
+	committedLen := min(len(m.log), int(committed))
 
-	out := make([]*privatepb.LogEntry, 0, len(m.log)-start)
-	for i := start; i < len(m.log); i++ {
+	// Zagotovimo, da je start \in [0, committedLen].
+	start := max(0, int(last))
+	start = min(committedLen, start)
+
+	out := make([]*privatepb.LogEntry, 0, committedLen-start)
+	for i := start; i < committedLen; i++ {
 		out = append(out, proto.Clone(m.log[i]).(*privatepb.LogEntry))
 	}
 	return &privatepb.UpdateResponse{MissingEntries: out}, nil
@@ -466,6 +819,43 @@ func (m *Manager) appendLocalEntryLocked(e *privatepb.LogEntry) {
 	m.lastApplied = e.EntryId
 }
 
+// rollbackHeadUncommitted odstrani vse ne-commitane vnose iz loga.
+// Uporabimo ga, če je HEAD ustvaril entry, a ga ni uspel posredovati naprej.
+// S tem ohranimo invariant: lastApplied == lastCommitted (na HEAD-u).
+// Klicatelj NE sme držati m.mu.
+func (m *Manager) rollbackHeadUncommitted() {
+	var abort []chan error
+
+	m.mu.Lock()
+	if !m.isHead {
+		m.mu.Unlock()
+		return
+	}
+	if m.lastApplied <= m.lastCommitted {
+		m.mu.Unlock()
+		return
+	}
+	// Trunciramo log do commitane meje.
+	if int(m.lastCommitted) < len(m.log) {
+		m.log = m.log[:int(m.lastCommitted)]
+	}
+	m.lastApplied = m.lastCommitted
+	// Generator EntryId nadaljuje od zadnjega commit-anega id.
+	m.nextEntryID = m.lastCommitted
+	// Počisti morebitne waiterje (defenzivno).
+	for id, ch := range m.waiters {
+		if id > m.lastCommitted {
+			abort = append(abort, ch)
+			delete(m.waiters, id)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, ch := range abort {
+		signalWaiter(ch, ErrWriteAborted)
+	}
+}
+
 // forwardToNext pošlje entry naslednjemu node-u; če veriga nima naslednika, gre za commit v enovozliščni postavitvi.
 
 func (m *Manager) forwardToNext(ctx context.Context, e *privatepb.LogEntry) error {
@@ -482,7 +872,13 @@ func (m *Manager) forwardToNext(ctx context.Context, e *privatepb.LogEntry) erro
 		return nil
 	}
 	_, err = client.Forward(ctx, &privatepb.ForwardRequest{Entry: e})
-	return err
+	if err == nil {
+		return nil
+	}
+	if !m.isRetryableForwardErr(err) {
+		return err
+	}
+	return m.forwardWithRetry(ctx, client, e)
 }
 
 // waitForCommit blokira (ali do ctx cancel), dokler ne prejmemo Commit za entryID.
@@ -493,8 +889,8 @@ func (m *Manager) waitForCommit(ctx context.Context, entryID uint64) error {
 		m.mu.Unlock()
 		return nil
 	}
-	ch := make(chan struct{})
-	// Kanal se zapre v Commit(), ko lastCommitted doseže entryID (zapiranje deluje kot "broadcast" signal).
+	ch := make(chan error, 1)
+	// Kanal se zaključi v Commit() (nil) ali ob abortu re-konfiguracije (non-nil).
 	m.waiters[entryID] = ch
 	m.mu.Unlock()
 
@@ -508,13 +904,47 @@ func (m *Manager) waitForCommit(ctx context.Context, entryID uint64) error {
 		m.mu.Unlock()
 
 		return ctx.Err()
-	case <-ch:
-		return nil
+	case err := <-ch:
+		return err
 	}
 }
 
 // ReplicateMessageEvent doda MessageEvent v replikacijski log in počaka na commit.
 func (m *Manager) ReplicateMessageEvent(ctx context.Context, ev *publicpb.MessageEvent) error {
+
+	if ev == nil {
+		return fmt.Errorf("nil event")
+	}
+
+	if err := m.ensureHead(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	id := m.nextLogEntryIDLocked()
+	// Za pravilno "commit gating" naročnin uporabljamo entry_id kot MessageEvent.sequence_number.
+	ev.SequenceNumber = int64(id)
+	payload, err := encodePayload(ev)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	entry := &privatepb.LogEntry{EntryId: id, Timestamp: timestamppb.Now(), Payload: payload}
+	m.appendLocalEntryLocked(entry)
+	m.mu.Unlock()
+
+	if err := m.forwardToNext(ctx, entry); err != nil {
+		// Forward ni uspel -> ta entry NI commit-an; na HEAD-u ga odstranimo iz loga,
+		// da kasnejši Update/Resync ne bi razširil "ghost" vnosa.
+		m.rollbackHeadUncommitted()
+		return err
+	}
+	return m.waitForCommit(ctx, id)
+}
+
+// ReplicateLikeEvent replicira OP_LIKE skupaj z liker_id (za deterministično deduplikacijo po failoverju).
+// Payload je structpb.Struct z base64 serializiranim MessageEvent-om in liker_id.
+func (m *Manager) ReplicateLikeEvent(ctx context.Context, ev *publicpb.MessageEvent, likerID int64) error {
 	if ev == nil {
 		return fmt.Errorf("nil event")
 	}
@@ -522,18 +952,39 @@ func (m *Manager) ReplicateMessageEvent(ctx context.Context, ev *publicpb.Messag
 		return err
 	}
 
-	payload, err := encodePayload(ev)
+	m.mu.Lock()
+	id := m.nextLogEntryIDLocked()
+	// entry_id uporabimo tudi kot sequence_number (commit gating).
+	ev.SequenceNumber = int64(id)
+
+	rawEv, err := proto.Marshal(ev)
 	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	st, err := structpb.NewStruct(map[string]any{
+		"kind":       "like_action",
+		"event_b64":  base64.StdEncoding.EncodeToString(rawEv),
+		"liker_id":   float64(likerID),
+		"topic_id":   float64(ev.GetMessage().GetTopicId()),
+		"message_id": float64(ev.GetMessage().GetId()),
+	})
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	payload, err := encodePayload(st)
+	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
-	m.mu.Lock()
-	id := m.nextLogEntryIDLocked()
 	entry := &privatepb.LogEntry{EntryId: id, Timestamp: timestamppb.Now(), Payload: payload}
 	m.appendLocalEntryLocked(entry)
 	m.mu.Unlock()
 
 	if err := m.forwardToNext(ctx, entry); err != nil {
+		m.rollbackHeadUncommitted()
 		return err
 	}
 	return m.waitForCommit(ctx, id)
@@ -559,6 +1010,7 @@ func (m *Manager) ReplicateUser(ctx context.Context, u *publicpb.User) error {
 	m.mu.Unlock()
 
 	if err := m.forwardToNext(ctx, entry); err != nil {
+		m.rollbackHeadUncommitted()
 		return err
 	}
 	return m.waitForCommit(ctx, id)
@@ -584,6 +1036,7 @@ func (m *Manager) ReplicateTopic(ctx context.Context, t *publicpb.Topic) error {
 	m.mu.Unlock()
 
 	if err := m.forwardToNext(ctx, entry); err != nil {
+		m.rollbackHeadUncommitted()
 		return err
 	}
 	return m.waitForCommit(ctx, id)

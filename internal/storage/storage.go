@@ -33,6 +33,18 @@ type subscription struct {
 	kanal chan *pb.MessageEvent
 }
 
+// Struct za ukvarjanje z like in njihovo deduplikacijo.
+type LikeKey struct {
+	TopicID   int64
+	MessageID int64
+	UserID    int64
+}
+
+type pendingEvent struct {
+	ev   *pb.MessageEvent
+	like *LikeKey // samo za OP_LIKE; drugače nil
+}
+
 type State struct {
 	mu sync.RWMutex
 	// mu ščiti vso interno stanje (RWMutex: več bralcev ali en pisec).
@@ -53,8 +65,14 @@ type State struct {
 	// TopicID -> []sporociloID (v vrstnem redu nastanka).
 	msgIDsByTopic map[int64][]int64
 
-	// Globalni event log (uporabi se za history pri SubscribeTopic).
+	// Globalni event log (samo COMMITTED dogodki; uporabi se za history pri SubscribeTopic).
 	events []*pb.MessageEvent
+
+	// Pending (aplicirani, a še ne-commitani) dogodki; v vrstnem redu apply-ja.
+	pending []pendingEvent
+
+	// Največja commitana zaporedna številka (SequenceNumber). Uporablja se za gating naročnin.
+	committedSeq int64
 
 	// Aktivne naročnine (vsaka naročnina ima EN kanal in množico tem).
 	nextSubscribeID int64
@@ -89,11 +107,49 @@ func NewState() *State {
 		msgIDsByTopic: make(map[int64][]int64),
 
 		events:        make([]*pb.MessageEvent, 0, 1024),
+		pending:       make([]pendingEvent, 0, 1024),
+		committedSeq:  0,
 		subscriptions: make(map[int64]*subscription),
 
 		zaporednaStevilka: 0,
 		vsecMnozica:       make(map[int64]map[int64]map[int64]struct{}),
 	}
+}
+
+// ResetAll resetira celotno stanje (vključno z zgodovino in naročninami).
+// Uporabno pri re-konfiguraciji verige (failover), ko želimo odstraniti ne-commitane spremembe
+// in ponovno zgraditi state iz commit-anega loga.
+func (s *State) ResetAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Zapri in odstrani obstoječe naročnine, da preprečimo podvojena sporočila po rebuild-u.
+	for id, sub := range s.subscriptions {
+		if sub != nil && sub.kanal != nil {
+			close(sub.kanal)
+		}
+		delete(s.subscriptions, id)
+	}
+
+	s.nextUserID = 1
+	s.users = make(map[int64]*pb.User)
+
+	s.nextTopicID = 1
+	s.topics = make(map[int64]*pb.Topic)
+
+	s.nextMsgID = 1
+	s.msgs = make(map[int64]*pb.Message)
+	s.msgIDsByTopic = make(map[int64][]int64)
+
+	s.events = make([]*pb.MessageEvent, 0, 1024)
+	s.pending = make([]pendingEvent, 0, 1024)
+	s.committedSeq = 0
+
+	s.nextSubscribeID = 0
+	s.subscriptions = make(map[int64]*subscription)
+
+	s.zaporednaStevilka = 0
+	s.vsecMnozica = make(map[int64]map[int64]map[int64]struct{})
 }
 
 // UpsertUser vstavi uporabnika z že določenim ID-jem (uporabno na repliki/followerju).
@@ -126,9 +182,17 @@ func (s *State) UpsertTopic(topic *pb.Topic) {
 	}
 }
 
-// ApplyReplicatedEvent aplicira replikiran MessageEvent s fiksno sequence_number.
+// ApplyReplicatedEvent aplicira repliciran MessageEvent s fiksno sequence_number.
 // To uporabljamo pri verižni replikaciji, da vsa vozlišča vidijo enak vrstni red dogodkov.
 func (s *State) ApplyReplicatedEvent(ev *pb.MessageEvent) error {
+	return s.ApplyReplicatedEventWithMeta(ev, nil)
+}
+
+// ApplyReplicatedEventWithMeta aplicira replikiran MessageEvent s fiksno sequence_number.
+// Meta podatki (like) se uporabljajo za deterministično rekonstrukcijo deduplikacije všečkov
+// po failoverju. Meta se v stanje uveljavi šele ob commit-u (da ne blokiramo legitimnih like-ov,
+// če je write kasneje "rollbackan" zaradi re-konfiguracije).
+func (s *State) ApplyReplicatedEventWithMeta(ev *pb.MessageEvent, like *LikeKey) error {
 	if ev == nil || ev.Message == nil {
 		return errors.New("neveljaven event")
 	}
@@ -195,9 +259,17 @@ func (s *State) ApplyReplicatedEvent(ev *pb.MessageEvent) error {
 		return errors.New("nepodprta op")
 	}
 
-	// Dodaj v globalni event log in obvesti naročnike.
-	s.events = append(s.events, evCpy)
-	s.notifySubscribersLocked(msg.TopicId, evCpy)
+	// Vidnost naročnin + zgodovina: v events log dodamo samo committed dogodke.
+	if evCpy.SequenceNumber <= s.committedSeq {
+		s.events = append(s.events, evCpy)
+		s.notifySubscribersLocked(msg.TopicId, evCpy)
+		if like != nil && evCpy.Op == pb.OpType_OP_LIKE {
+			s.markLikeLocked(like.TopicID, like.MessageID, like.UserID)
+		}
+		return nil
+	}
+
+	s.pending = append(s.pending, pendingEvent{ev: evCpy, like: like})
 	return nil
 }
 
@@ -388,7 +460,7 @@ func (s *State) GetMsgID() int64 {
 // PreparePostMessage preveri, da uporabnik in tema obstajata, ter rezervira nov
 // ID sporočila, vendar sporočila NE shrani v stanje in NE
 // obvesti naročnikov.
-//
+
 // Vrnjeno Message je namenjeno, da ga oviješ v replikacijski MessageEvent
 // (OP_POST) in ga kasneje apliciraš prek ApplyReplicatedEvent.
 func (s *State) PreparePostMessage(topicID, userID int64, text string, createdAt *timestamppb.Timestamp) (*pb.Message, error) {
@@ -484,12 +556,7 @@ func (s *State) PrepareLikeMessage(topicID, msgID, likerID int64) (*pb.Message, 
 	return cpy, true, nil
 }
 
-// MarkLike zabeleži, da je likerID všečkal (topicID,msgID). To glava uporabi
-// po tem, ko je všeček commit-an in apliciran prek ApplyReplicatedEvent.
-func (s *State) MarkLike(topicID, msgID, likerID int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *State) markLikeLocked(topicID, msgID, likerID int64) {
 	if s.vsecMnozica[topicID] == nil {
 		s.vsecMnozica[topicID] = make(map[int64]map[int64]struct{})
 	}
@@ -497,6 +564,45 @@ func (s *State) MarkLike(topicID, msgID, likerID int64) {
 		s.vsecMnozica[topicID][msgID] = make(map[int64]struct{})
 	}
 	s.vsecMnozica[topicID][msgID][likerID] = struct{}{}
+}
+
+// MarkLike zabeleži, da je likerID všečkal (topicID,msgID).
+// Uporabno predvsem na glavi po commit-u; na followerjih se to izvaja prek ApplyReplicatedEventWithMeta + AdvanceCommittedSequence.
+func (s *State) MarkLike(topicID, msgID, likerID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markLikeLocked(topicID, msgID, likerID)
+}
+
+// AdvanceCommittedSequence pove State-u, do katere zaporedne številke (SequenceNumber) so dogodki commitani.
+// To se uporablja na followerjih, da naročnikom ne pošiljamo ne-commitanih dogodkov.
+func (s *State) AdvanceCommittedSequence(committedSeq int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if committedSeq <= s.committedSeq {
+		return
+	}
+	s.committedSeq = committedSeq
+
+	// Flush pending v vrstnem redu apply-ja (tudi če so seq številke "luknjaste", ker
+	// log entry_id pokriva tudi CreateUser/CreateTopic).
+	for len(s.pending) > 0 {
+		item := s.pending[0]
+		if item.ev.GetSequenceNumber() > s.committedSeq {
+			break
+		}
+		s.pending = s.pending[1:]
+		m := item.ev.GetMessage()
+		if m == nil {
+			continue
+		}
+		s.events = append(s.events, item.ev)
+		s.notifySubscribersLocked(m.GetTopicId(), item.ev)
+		if item.like != nil && item.ev.GetOp() == pb.OpType_OP_LIKE {
+			s.markLikeLocked(item.like.TopicID, item.like.MessageID, item.like.UserID)
+		}
+	}
 }
 
 // CreateMessageNoEvent je podobna CreateMessage, vendar NE generira MessageEvent
@@ -689,7 +795,6 @@ func (s *State) DeleteMessage(msgID int64, topicID int64) {
 	existing := s.msgs[msgID]
 	delete(s.msgs, msgID)
 
-	// Odstrani iz seznama po temi (linearno, OK za projekt).
 	msgIDsByTopic := s.msgIDsByTopic[topicID]
 	for i, currMsgID := range msgIDsByTopic {
 		if currMsgID == msgID {

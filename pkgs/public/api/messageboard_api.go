@@ -24,6 +24,7 @@ type MessageBoardServer struct {
 
 	stanje          *storage.State
 	podatkiVozlisca *pb.NodeInfo
+	cfgMu           sync.RWMutex
 	veriga          []*pb.NodeInfo
 
 	isHead bool
@@ -61,15 +62,44 @@ func NewMessageBoardServer(opts NodeOptions) *MessageBoardServer {
 	}
 }
 
+// UpdateClusterConfig omogoča dinamično posodabljanje verige (za control plane / failover).
+// chain je lahko nil (takrat ohranimo obstoječo verigo).
+func (s *MessageBoardServer) UpdateClusterConfig(chain []*pb.NodeInfo, isHead, isTail bool) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+
+	if chain != nil {
+		// Kopija, da se ne zanašamo na življenjsko dobo slice-a iz klicatelja.
+		cpy := make([]*pb.NodeInfo, 0, len(chain))
+		for _, n := range chain {
+			if n == nil {
+				continue
+			}
+			cpy = append(cpy, &pb.NodeInfo{NodeId: n.GetNodeId(), Address: n.GetAddress()})
+		}
+		s.veriga = cpy
+	}
+	s.isHead = isHead
+	s.isTail = isTail
+}
+
 func (s *MessageBoardServer) requireHead() error {
-	if s.isHead {
+	s.cfgMu.RLock()
+	isHead := s.isHead
+	s.cfgMu.RUnlock()
+
+	if isHead {
 		return nil
 	}
 	return status.Error(codes.FailedPrecondition, "Operacija je dovoljena samo na HEAD vozlišču.")
 }
 
 func (s *MessageBoardServer) requireTail() error {
-	if !s.isTail {
+	s.cfgMu.RLock()
+	isTail := s.isTail
+	s.cfgMu.RUnlock()
+
+	if !isTail {
 		return status.Error(codes.FailedPrecondition, "Operacija je dovoljena samo na TAIL vozlišču.")
 	}
 
@@ -89,12 +119,16 @@ func (s *MessageBoardServer) hashSubscriptionKey(userID int64, topicIDs []int64)
 }
 
 func (s *MessageBoardServer) pickSubscriptionNode(userID int64, topicIDs []int64) *pb.NodeInfo {
-	if len(s.veriga) == 0 {
+	s.cfgMu.RLock()
+	chain := s.veriga
+	s.cfgMu.RUnlock()
+
+	if len(chain) == 0 {
 		return s.podatkiVozlisca
 	}
 	k := s.hashSubscriptionKey(userID, topicIDs)
-	idx := int(k % uint64(len(s.veriga)))
-	return s.veriga[idx]
+	idx := int(k % uint64(len(chain)))
+	return chain[idx]
 }
 
 func (s *MessageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
@@ -105,6 +139,7 @@ func (s *MessageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserR
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	uporabnik := &pb.User{Id: s.stanje.GetUserID(), Name: req.GetName()}
+
 	if s.repl != nil {
 		// Prvo replikacija. Potem apliciramo v lokalno bazo po commitu.
 		if err := s.repl.ReplicateUser(ctx, uporabnik); err != nil {
@@ -140,7 +175,9 @@ func (s *MessageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
 	now := timestamppb.Now()
+
 	msg, err := s.stanje.PreparePostMessage(req.GetTopicId(), req.GetUserId(), req.GetText(), now)
 	if err != nil {
 		switch err {
@@ -152,14 +189,22 @@ func (s *MessageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 			return nil, status.Error(codes.Internal, "Napaka pri objavi sporočila.")
 		}
 	}
-	seq := s.stanje.NextSequenceNumber()
-	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_POST, Message: msg, EventAt: now}
-	if s.repl != nil {
 
+	seq := int64(0)
+	if s.repl == nil {
+		seq = s.stanje.NextSequenceNumber()
+	}
+	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_POST, Message: msg, EventAt: now}
+
+	if s.repl != nil {
 		if err := s.repl.ReplicateMessageEvent(ctx, ev); err != nil {
 			return nil, status.Error(codes.Internal, "Napaka pri replikaciji sporočila.")
 		}
+	} else {
+		// Enovozliščni način: šteje kot commit takoj.
+		s.stanje.AdvanceCommittedSequence(ev.SequenceNumber)
 	}
+
 	if err := s.stanje.ApplyReplicatedEvent(ev); err != nil {
 		return nil, status.Error(codes.Internal, "Napaka pri uveljavitvi sporočila.")
 	}
@@ -173,6 +218,7 @@ func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
 	updated, err := s.stanje.PrepareUpdateMessageText(req.GetTopicId(), req.GetUserId(), req.GetMessageId(), req.GetText())
 	if err != nil {
 		switch err {
@@ -186,15 +232,23 @@ func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 			return nil, status.Error(codes.Internal, "Napaka pri posodobitvi sporočila.")
 		}
 	}
-	now := timestamppb.Now()
-	seq := s.stanje.NextSequenceNumber()
-	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_UPDATE, Message: updated, EventAt: now}
-	if s.repl != nil {
 
+	now := timestamppb.Now()
+	seq := int64(0)
+	if s.repl == nil {
+		seq = s.stanje.NextSequenceNumber()
+	}
+	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_UPDATE, Message: updated, EventAt: now}
+
+	if s.repl != nil {
 		if err := s.repl.ReplicateMessageEvent(ctx, ev); err != nil {
 			return nil, status.Error(codes.Internal, "Napaka pri replikaciji posodobitve.")
 		}
+	} else {
+		// Enovozliščni način: šteje kot commit takoj.
+		s.stanje.AdvanceCommittedSequence(ev.SequenceNumber)
 	}
+
 	if err := s.stanje.ApplyReplicatedEvent(ev); err != nil {
 		return nil, status.Error(codes.Internal, "Napaka pri uveljavitvi posodobitve.")
 	}
@@ -208,6 +262,7 @@ func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
 	snapshot, err := s.stanje.PrepareDeleteMessageIfOwner(req.GetTopicId(), req.GetUserId(), req.GetMessageId())
 	if err != nil {
 		switch err {
@@ -221,18 +276,27 @@ func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 			return nil, status.Error(codes.Internal, "Napaka pri brisanju sporočila.")
 		}
 	}
-	now := timestamppb.Now()
-	seq := s.stanje.NextSequenceNumber()
-	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_DELETE, Message: snapshot, EventAt: now}
-	if s.repl != nil {
 
+	now := timestamppb.Now()
+	seq := int64(0)
+	if s.repl == nil {
+		seq = s.stanje.NextSequenceNumber()
+	}
+	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_DELETE, Message: snapshot, EventAt: now}
+
+	if s.repl != nil {
 		if err := s.repl.ReplicateMessageEvent(ctx, ev); err != nil {
 			return nil, status.Error(codes.Internal, "Napaka pri replikaciji brisanja.")
 		}
+	} else {
+		// Enovozliščni način: šteje kot commit takoj.
+		s.stanje.AdvanceCommittedSequence(ev.SequenceNumber)
 	}
+
 	if err := s.stanje.ApplyReplicatedEvent(ev); err != nil {
 		return nil, status.Error(codes.Internal, "Napaka pri uveljavitvi brisanja.")
 	}
+
 	return &emptypb.Empty{}, nil
 }
 
@@ -263,19 +327,25 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 		return updated, nil
 	}
 	now := timestamppb.Now()
-	seq := s.stanje.NextSequenceNumber()
+	seq := int64(0)
+	if s.repl == nil {
+		seq = s.stanje.NextSequenceNumber()
+	}
 	ev := &pb.MessageEvent{SequenceNumber: seq, Op: pb.OpType_OP_LIKE, Message: updated, EventAt: now}
-	if s.repl != nil {
 
-		if err := s.repl.ReplicateMessageEvent(ctx, ev); err != nil {
+	if s.repl != nil {
+		if err := s.repl.ReplicateLikeEvent(ctx, ev, req.GetUserId()); err != nil {
 			return nil, status.Error(codes.Internal, "Napaka pri replikaciji všečka.")
 		}
+	} else {
+		// Enovozliščni način: šteje kot commit takoj.
+		s.stanje.AdvanceCommittedSequence(ev.SequenceNumber)
 	}
-	if err := s.stanje.ApplyReplicatedEvent(ev); err != nil {
+
+	if err := s.stanje.ApplyReplicatedEventWithMeta(ev, &storage.LikeKey{TopicID: req.GetTopicId(), MessageID: req.GetMessageId(), UserID: req.GetUserId()}); err != nil {
 		return nil, status.Error(codes.Internal, "Napaka pri uveljavitvi všečka.")
 	}
 
-	s.stanje.MarkLike(req.GetTopicId(), req.GetMessageId(), req.GetUserId())
 	return updated, nil
 }
 
