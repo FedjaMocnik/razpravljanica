@@ -326,6 +326,7 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 	if !changed {
 		return updated, nil
 	}
+
 	now := timestamppb.Now()
 	seq := int64(0)
 	if s.repl == nil {

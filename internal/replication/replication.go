@@ -664,9 +664,10 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	// Posreduj naslednjemu, če obstaja.
 	m.mu.Lock()
 	isTail := m.isTail
-	client, err := m.dialNextLocked()
+	nextClient, err := m.dialNextLocked()
 	prevClient, prevErr := m.dialPrevLocked()
 	m.mu.Unlock()
+
 	if err != nil {
 		return nil, err
 	}
@@ -675,11 +676,11 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	}
 
 	var committed uint64
-	if client != nil {
+	if nextClient != nil {
 		backoff := 80 * time.Millisecond
 		deadline := time.Now().Add(3 * time.Second)
 		for {
-			resp, err := client.Forward(ctx, req)
+			resp, err := nextClient.Forward(ctx, req)
 			if err == nil {
 				committed = resp.GetCommittedEntryId()
 				break
