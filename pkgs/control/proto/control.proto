@@ -24,6 +24,11 @@ service ControlPlaneService {
 
   // torej ker control ve nek chain je to ubistvu request, če ga še kdo potrebuje.
   rpc GetChain(GetChainRequest) returns (GetChainResponse);
+
+  // Raft peer management
+  rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+  rpc GetRaftState(GetRaftStateRequest) returns (GetRaftStateResponse);
 }
 
 
@@ -33,6 +38,44 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {
   bool ok = 1;
+  string leader_addr = 2;  // Naslov leaderja za redirect
+}
+
+// Raft peer management
+message AddPeerRequest {
+  string node_id = 1;
+  string raft_addr = 2;
+  string grpc_addr = 3;
+}
+
+message AddPeerResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message RemovePeerRequest {
+  string node_id = 1;
+}
+
+message RemovePeerResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message GetRaftStateRequest {}
+
+message GetRaftStateResponse {
+  bool is_leader = 1;
+  string leader_id = 2;
+  string leader_addr = 3;
+  repeated RaftPeer peers = 4;
+  string state = 5;  // "leader", "follower", "candidate"
+}
+
+message RaftPeer {
+  string node_id = 1;
+  string raft_addr = 2;
+  string grpc_addr = 3;
 }
 
 message JoinChainRequest {
