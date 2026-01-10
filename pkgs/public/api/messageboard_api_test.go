@@ -11,8 +11,20 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func newTestServer() *MessageBoardServer {
+	return NewMessageBoardServer(NodeOptions{
+		IsHead: true,
+		IsTail: true,
+		NodeInfo: &pb.NodeInfo{
+			NodeId:  "test-node",
+			Address: "localhost:50051",
+		},
+		TokenSecret: []byte("test-secret"),
+	})
+}
+
 func TestCreateUser(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 	user, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{
 		Name: "Brina",
 	})
@@ -28,7 +40,7 @@ func TestCreateUser(t *testing.T) {
 }
 
 func TestCreateMultipleUsers(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user1, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	if err != nil {
@@ -50,7 +62,7 @@ func TestCreateMultipleUsers(t *testing.T) {
 }
 
 func TestCreateTopic(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	topic, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{
 		Name: "General",
@@ -67,7 +79,7 @@ func TestCreateTopic(t *testing.T) {
 }
 
 func TestCreateMultipleTopics(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	topic1, err := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	if err != nil {
@@ -89,7 +101,7 @@ func TestCreateMultipleTopics(t *testing.T) {
 }
 
 func TestPostMessage(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -124,7 +136,7 @@ func TestPostMessage(t *testing.T) {
 }
 
 func TestUpdateMessage(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -153,7 +165,7 @@ func TestUpdateMessage(t *testing.T) {
 }
 
 func TestUpdateMessageNotFound(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -179,7 +191,7 @@ func TestUpdateMessageNotFound(t *testing.T) {
 }
 
 func TestUpdateMessagePermissionDenied(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
@@ -211,7 +223,7 @@ func TestUpdateMessagePermissionDenied(t *testing.T) {
 }
 
 func TestDeleteMessage(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -241,7 +253,7 @@ func TestDeleteMessage(t *testing.T) {
 }
 
 func TestDeleteMessageNotFound(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -266,7 +278,7 @@ func TestDeleteMessageNotFound(t *testing.T) {
 }
 
 func TestDeleteMessagePermissionDenied(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user1, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	user2, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Diego"})
@@ -297,7 +309,7 @@ func TestDeleteMessagePermissionDenied(t *testing.T) {
 }
 
 func TestLikeMessage(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -350,7 +362,7 @@ func TestLikeMessage(t *testing.T) {
 }
 
 func TestLikeMessageNotFound(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -375,7 +387,7 @@ func TestLikeMessageNotFound(t *testing.T) {
 }
 
 func TestListTopics(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
 	s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "Random"})
@@ -392,7 +404,7 @@ func TestListTopics(t *testing.T) {
 }
 
 func TestListTopicsEmpty(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	response, err := s.ListTopics(context.Background(), nil)
 
@@ -405,7 +417,7 @@ func TestListTopicsEmpty(t *testing.T) {
 }
 
 func TestGetMessages(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -434,7 +446,7 @@ func TestGetMessages(t *testing.T) {
 }
 
 func TestGetMessagesMultipleTopics(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic1, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -467,7 +479,7 @@ func TestGetMessagesMultipleTopics(t *testing.T) {
 }
 
 func TestGetSubscriptionNode(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 	topic, _ := s.CreateTopic(context.Background(), &pb.CreateTopicRequest{Name: "General"})
@@ -492,7 +504,7 @@ func TestGetSubscriptionNode(t *testing.T) {
 }
 
 func TestGetSubscriptionNodeNoTopics(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 
@@ -515,7 +527,7 @@ func TestGetSubscriptionNodeNoTopics(t *testing.T) {
 }
 
 func TestGetSubscriptionNodeTopicNotFound(t *testing.T) {
-	s := NewMessageBoardServer()
+	s := newTestServer()
 
 	user, _ := s.CreateUser(context.Background(), &pb.CreateUserRequest{Name: "Brina"})
 
