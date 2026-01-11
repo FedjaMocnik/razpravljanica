@@ -10,47 +10,61 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-// CommandType definira tip ukaza za FSM
+// CommandType definira tip ukaza za FSM.
 type CommandType uint8
 
 const (
+	// Operacije nad data-plane verigo.
 	CommandJoin CommandType = iota
 	CommandRemove
 	CommandUpdateNode
+
+	// Operacije nad metapodatki control-plane peerjev.
+	CommandUpsertPeer
+	CommandRemovePeer
 )
 
-// Command je ukaz, ki se aplicira na FSM
+// Command je ukaz, ki se aplicira na FSM.
+// Za chain operacije: NodeID, Addr.
+// Za peer operacije: NodeID, RaftAddr, GRPCAddr.
 type Command struct {
-	Type   CommandType `json:"type"`
-	NodeID string      `json:"node_id"`
-	Addr   string      `json:"addr"`
+	Type     CommandType `json:"type"`
+	NodeID   string      `json:"node_id"`
+	Addr     string      `json:"addr,omitempty"`
+	RaftAddr string      `json:"raft_addr,omitempty"`
+	GRPCAddr string      `json:"grpc_addr,omitempty"`
 }
 
-// ChainState je stanje verige (chain), ki jo hranimo v FSM
-type ChainState struct {
-	Chain []*NodeState `json:"chain"`
-}
-
-// NodeState je stanje posameznega vozlišča
+// NodeState je stanje posameznega data-plane vozlišča.
 type NodeState struct {
 	NodeID  string `json:"node_id"`
 	Address string `json:"address"`
 }
 
-// FSM implementira raft.FSM za hranjenje stanja verige
+// PeerState je stanje control-plane peerja.
+type PeerState struct {
+	NodeID   string `json:"node_id"`
+	RaftAddr string `json:"raft_addr"`
+	GRPCAddr string `json:"grpc_addr"`
+}
+
+// SnapshotState je stanje, ki ga hranimo v snapshotu.
+type SnapshotState struct {
+	Chain []*NodeState          `json:"chain"`
+	Peers map[string]*PeerState `json:"peers"`
+}
+
+// FSM implementira raft.FSM: (a) veriga data-plane node-ov, (b) peer metadata control-plane.
 type FSM struct {
 	mu    sync.RWMutex
 	chain []*NodeState
+	peers map[string]*PeerState
 }
 
-// NewFSM ustvari novo FSM instanco
 func NewFSM() *FSM {
-	return &FSM{
-		chain: make([]*NodeState, 0),
-	}
+	return &FSM{chain: make([]*NodeState, 0), peers: make(map[string]*PeerState)}
 }
 
-// Apply aplicira raft log vnos na FSM
 func (f *FSM) Apply(l *raft.Log) interface{} {
 	var cmd Command
 	if err := json.Unmarshal(l.Data, &cmd); err != nil {
@@ -63,7 +77,11 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 	case CommandRemove:
 		return f.applyRemove(cmd.NodeID)
 	case CommandUpdateNode:
-		return f.applyUpdate(cmd.NodeID, cmd.Addr)
+		return f.applyUpdateNode(cmd.NodeID, cmd.Addr)
+	case CommandUpsertPeer:
+		return f.applyUpsertPeer(cmd.NodeID, cmd.RaftAddr, cmd.GRPCAddr)
+	case CommandRemovePeer:
+		return f.applyRemovePeer(cmd.NodeID)
 	default:
 		return fmt.Errorf("neznan tip ukaza: %d", cmd.Type)
 	}
@@ -73,27 +91,19 @@ func (f *FSM) applyJoin(nodeID, addr string) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Preveri če že obstaja
 	for i, n := range f.chain {
 		if n.NodeID == nodeID {
-			// Posodobi naslov
 			f.chain[i].Address = addr
 			return nil
 		}
 	}
-
-	// Dodaj na konec verige
-	f.chain = append(f.chain, &NodeState{
-		NodeID:  nodeID,
-		Address: addr,
-	})
+	f.chain = append(f.chain, &NodeState{NodeID: nodeID, Address: addr})
 	return nil
 }
 
 func (f *FSM) applyRemove(nodeID string) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	for i, n := range f.chain {
 		if n.NodeID == nodeID {
 			f.chain = append(f.chain[:i], f.chain[i+1:]...)
@@ -103,10 +113,9 @@ func (f *FSM) applyRemove(nodeID string) interface{} {
 	return nil
 }
 
-func (f *FSM) applyUpdate(nodeID, addr string) interface{} {
+func (f *FSM) applyUpdateNode(nodeID, addr string) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	for i, n := range f.chain {
 		if n.NodeID == nodeID {
 			f.chain[i].Address = addr
@@ -116,88 +125,94 @@ func (f *FSM) applyUpdate(nodeID, addr string) interface{} {
 	return nil
 }
 
-// Snapshot vrne FSMSnapshot za persistenco
+func (f *FSM) applyUpsertPeer(nodeID, raftAddr, grpcAddr string) interface{} {
+	if nodeID == "" {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.peers == nil {
+		f.peers = make(map[string]*PeerState)
+	}
+	f.peers[nodeID] = &PeerState{NodeID: nodeID, RaftAddr: raftAddr, GRPCAddr: grpcAddr}
+	return nil
+}
+
+func (f *FSM) applyRemovePeer(nodeID string) interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.peers, nodeID)
+	return nil
+}
+
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Kopiramo stanje
 	chain := make([]*NodeState, len(f.chain))
 	for i, n := range f.chain {
-		chain[i] = &NodeState{
-			NodeID:  n.NodeID,
-			Address: n.Address,
-		}
+		chain[i] = &NodeState{NodeID: n.NodeID, Address: n.Address}
+	}
+	peers := make(map[string]*PeerState, len(f.peers))
+	for k, p := range f.peers {
+		peers[k] = &PeerState{NodeID: p.NodeID, RaftAddr: p.RaftAddr, GRPCAddr: p.GRPCAddr}
 	}
 
-	return &FSMSnapshot{state: ChainState{Chain: chain}}, nil
+	return &FSMSnapshot{state: SnapshotState{Chain: chain, Peers: peers}}, nil
 }
 
-// Restore obnovi stanje iz snapshot-a
 func (f *FSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
 
-	var state ChainState
+	var state SnapshotState
 	if err := json.NewDecoder(rc).Decode(&state); err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	f.chain = state.Chain
+	if state.Peers == nil {
+		state.Peers = make(map[string]*PeerState)
+	}
+	f.peers = state.Peers
 	f.mu.Unlock()
-
 	return nil
 }
 
-// GetChain vrne kopijo trenutne verige
+// ---- Helpers (chain)
+
 func (f *FSM) GetChain() []*controlpb.NodeInfo {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
 	chain := make([]*controlpb.NodeInfo, len(f.chain))
 	for i, n := range f.chain {
-		chain[i] = &controlpb.NodeInfo{
-			NodeId:  n.NodeID,
-			Address: n.Address,
-		}
+		chain[i] = &controlpb.NodeInfo{NodeId: n.NodeID, Address: n.Address}
 	}
 	return chain
 }
 
-// GetHead vrne glavo verige
 func (f *FSM) GetHead() *controlpb.NodeInfo {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
 	if len(f.chain) == 0 {
 		return nil
 	}
-	return &controlpb.NodeInfo{
-		NodeId:  f.chain[0].NodeID,
-		Address: f.chain[0].Address,
-	}
+	return &controlpb.NodeInfo{NodeId: f.chain[0].NodeID, Address: f.chain[0].Address}
 }
 
-// GetTail vrne rep verige
 func (f *FSM) GetTail() *controlpb.NodeInfo {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
 	if len(f.chain) == 0 {
 		return nil
 	}
 	n := f.chain[len(f.chain)-1]
-	return &controlpb.NodeInfo{
-		NodeId:  n.NodeID,
-		Address: n.Address,
-	}
+	return &controlpb.NodeInfo{NodeId: n.NodeID, Address: n.Address}
 }
 
-// NodeIndex vrne indeks vozlišča v verigi ali -1
 func (f *FSM) NodeIndex(nodeID string) int {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-
 	for i, n := range f.chain {
 		if n.NodeID == nodeID {
 			return i
@@ -206,26 +221,47 @@ func (f *FSM) NodeIndex(nodeID string) int {
 	return -1
 }
 
-// FSMSnapshot implementira raft.FSMSnapshot
-type FSMSnapshot struct {
-	state ChainState
+// ---- Helpers (peers)
+
+func (f *FSM) GetPeer(nodeID string) (PeerState, bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	p, ok := f.peers[nodeID]
+	if !ok || p == nil {
+		return PeerState{}, false
+	}
+	return *p, true
 }
 
-// Persist shrani snapshot
+func (f *FSM) ListPeers() []PeerState {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := make([]PeerState, 0, len(f.peers))
+	for _, p := range f.peers {
+		if p == nil {
+			continue
+		}
+		out = append(out, *p)
+	}
+	return out
+}
+
+// FSMSnapshot implementira raft.FSMSnapshot.
+type FSMSnapshot struct {
+	state SnapshotState
+}
+
 func (s *FSMSnapshot) Persist(sink raft.SnapshotSink) error {
 	data, err := json.Marshal(s.state)
 	if err != nil {
 		sink.Cancel()
 		return err
 	}
-
 	if _, err := sink.Write(data); err != nil {
 		sink.Cancel()
 		return err
 	}
-
 	return sink.Close()
 }
 
-// Release sprosti vire
 func (s *FSMSnapshot) Release() {}

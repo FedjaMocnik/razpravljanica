@@ -36,5 +36,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&nodeID, "node-id", "node1", "ID vozlišča (mora biti v chain)")
 	rootCmd.PersistentFlags().StringVar(&chainSpec, "chain", "node1=localhost:9876", "Veriga (head->tail): node1=host:port,node2=host:port,...")
 	rootCmd.PersistentFlags().StringVar(&tokenSecret, "token-secret", "devsecret", "Skrivnost za subscribe tokene (mora biti enaka na vseh vozliščih)")
-	rootCmd.PersistentFlags().StringVar(&controlAddr, "control", "", "Naslov control unit strežnika (npr. localhost:9999). Če je podan, se chain upravlja dinamično.")
+	rootCmd.PersistentFlags().StringVar(&controlAddr, "control", "", "Naslov(i) control unit strežnika (npr. localhost:9999 ali localhost:9999,localhost:9998). Če je podan, se chain upravlja dinamično.")
 }

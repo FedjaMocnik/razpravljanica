@@ -8,6 +8,7 @@ import (
 
 	"github.com/FedjaMocnik/razpravljalnica/internal/cluster"
 	control "github.com/FedjaMocnik/razpravljalnica/internal/control_unit"
+	"github.com/FedjaMocnik/razpravljalnica/internal/controlclient"
 	"github.com/FedjaMocnik/razpravljalnica/internal/nodeadmin"
 	"github.com/FedjaMocnik/razpravljalnica/internal/replication"
 	"github.com/FedjaMocnik/razpravljalnica/internal/storage"
@@ -66,6 +67,11 @@ func Zazeni(naslov, nodeID, chainSpec, tokenSecret, controlAddr string) error {
 		isHead, isTail = false, false
 	}
 
+	var ctrlClient *controlclient.Client
+	if controlAddr != "" {
+		ctrlClient = controlclient.New(controlclient.ParseAddrs(controlAddr))
+	}
+
 	st := storage.NewState()
 	repl := replication.NewManager(replication.Config{
 		NodeID:   nodeID,
@@ -94,7 +100,7 @@ func Zazeni(naslov, nodeID, chainSpec, tokenSecret, controlAddr string) error {
 	pb.RegisterMessageBoardServer(grpcStreznik, razpravljalnicaStreznik)
 
 	// Node-side control service (UpdateNeighbors) – uporablja ga dedicated control unit.
-	controlpb.RegisterControlPlaneServiceServer(grpcStreznik, nodeadmin.New(nodeID, controlAddr, repl, razpravljalnicaStreznik))
+	controlpb.RegisterControlPlaneServiceServer(grpcStreznik, nodeadmin.New(nodeID, ctrlClient, repl, razpravljalnicaStreznik))
 
 	// V statični postavitvi (1. del) ima vsak node tudi public ControlPlane (GetClusterState).
 	if controlAddr == "" {
@@ -123,8 +129,8 @@ func Zazeni(naslov, nodeID, chainSpec, tokenSecret, controlAddr string) error {
 		}
 	}()
 
-	if controlAddr != "" {
-		go joinAndHeartbeat(controlAddr, nodeID, naslov, repl, razpravljalnicaStreznik)
+	if ctrlClient != nil {
+		go joinAndHeartbeat(ctrlClient, nodeID, naslov, repl, razpravljalnicaStreznik)
 	}
 
 	return <-serveErr

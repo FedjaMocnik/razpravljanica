@@ -23,154 +23,139 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
-// RaftServer je control unit z Raft konsenzom
-type RaftServer struct {
-	controlpb.UnimplementedControlPlaneServiceServer
-	publicpb.UnimplementedControlPlaneServer
-
-	mu sync.Mutex
-
-	// Raft komponente
-	raft      *raft.Raft
-	fsm       *FSM
-	transport *raft.NetworkTransport
-
-	// Node identifikacija
-	nodeID   string
-	raftAddr string
-	grpcAddr string
-
-	// Heartbeat tracking (lokalno)
-	lastHB    map[string]time.Time
-	hbTimeout time.Duration
-
-	// grpc clients to nodes (za UpdateNeighbors)
-	conns map[string]*grpc.ClientConn
-	cps   map[string]controlpb.ControlPlaneServiceClient
-
-	// Peers za discovery
-	peers []PeerConfig
-}
-
-// PeerConfig predstavlja peer control unit
+// PeerConfig predstavlja peer control unit (seed/discovery in metadata).
 type PeerConfig struct {
 	NodeID   string `json:"node_id"`
 	RaftAddr string `json:"raft_addr"`
 	GRPCAddr string `json:"grpc_addr"`
 }
 
-// RaftConfig je konfiguracija za RaftServer
+// RaftConfig je konfiguracija za RaftServer.
 type RaftConfig struct {
 	NodeID    string
 	RaftAddr  string
 	GRPCAddr  string
 	DataDir   string
 	Bootstrap bool
-	Peers     []PeerConfig
+	Peers     []PeerConfig // seed peers (za auto-join / fallback)
 	HBTimeout time.Duration
 }
 
-// NewRaftServer ustvari nov RaftServer
+// RaftServer je control unit z Raft konsenzom.
+type RaftServer struct {
+	controlpb.UnimplementedControlPlaneServiceServer
+	publicpb.UnimplementedControlPlaneServer
+
+	mu sync.Mutex
+
+	raft      *raft.Raft
+	fsm       *FSM
+	transport *raft.NetworkTransport
+
+	nodeID   string
+	raftAddr string
+	grpcAddr string
+
+	seedPeers        []PeerConfig
+	hasExistingState bool
+
+	// Heartbeat tracking (lokalno, samo leader).
+	lastHB    map[string]time.Time
+	hbTimeout time.Duration
+
+	// grpc clients (za UpdateNeighbors in forward).
+	conns map[string]*grpc.ClientConn
+	cps   map[string]controlpb.ControlPlaneServiceClient
+}
+
 func NewRaftServer(cfg RaftConfig) (*RaftServer, error) {
 	if cfg.HBTimeout <= 0 {
-		cfg.HBTimeout = 30 * time.Second // Povečan timeout za data serverje
+		cfg.HBTimeout = 30 * time.Second
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = "./data/" + cfg.NodeID
 	}
 
 	s := &RaftServer{
 		nodeID:    cfg.NodeID,
 		raftAddr:  cfg.RaftAddr,
 		grpcAddr:  cfg.GRPCAddr,
+		seedPeers: cfg.Peers,
 		lastHB:    make(map[string]time.Time),
 		hbTimeout: cfg.HBTimeout,
 		conns:     make(map[string]*grpc.ClientConn),
 		cps:       make(map[string]controlpb.ControlPlaneServiceClient),
-		peers:     cfg.Peers,
 	}
 
-	// Inicializiraj Raft
 	if err := s.setupRaft(cfg); err != nil {
 		return nil, fmt.Errorf("napaka pri setup raft: %w", err)
 	}
+
+	// Poskrbi, da bo leader v log zapisal tudi svoj gRPC/raft naslov (da followerji znajo najti leaderja).
+	go s.ensureSelfPeerRegistered()
 
 	return s, nil
 }
 
 func (s *RaftServer) setupRaft(cfg RaftConfig) error {
-	// Ustvari FSM
 	s.fsm = NewFSM()
 
-	// Raft konfiguracija
-	raftConfig := raft.DefaultConfig()
-	raftConfig.LocalID = raft.ServerID(cfg.NodeID)
-	raftConfig.SnapshotInterval = 30 * time.Second
-	raftConfig.SnapshotThreshold = 100
+	rc := raft.DefaultConfig()
+	rc.LocalID = raft.ServerID(cfg.NodeID)
 
-	// POMEMBNO: Zmanjšaj election timeout za hitrejši failover
-	// Default je 1000ms heartbeat, 1000-2000ms election timeout
-	raftConfig.HeartbeatTimeout = 500 * time.Millisecond
-	raftConfig.ElectionTimeout = 500 * time.Millisecond
-	raftConfig.LeaderLeaseTimeout = 250 * time.Millisecond
-	raftConfig.CommitTimeout = 100 * time.Millisecond
+	// Hitrejši failover (razumno za laboratorijsko okolje).
+	rc.HeartbeatTimeout = 600 * time.Millisecond
+	rc.ElectionTimeout = 600 * time.Millisecond
+	rc.LeaderLeaseTimeout = 300 * time.Millisecond
+	rc.CommitTimeout = 100 * time.Millisecond
+	rc.SnapshotInterval = 30 * time.Second
+	rc.SnapshotThreshold = 100
 
-	// Omogoči več logiranja za debugging
-	raftConfig.LogLevel = "DEBUG"
-
-	// Ustvari data dir
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("napaka pri ustvarjanju data dir: %w", err)
 	}
 
-	// Log store in stable store (BoltDB)
 	boltDB, err := raftboltdb.NewBoltStore(filepath.Join(cfg.DataDir, "raft.db"))
 	if err != nil {
 		return fmt.Errorf("napaka pri ustvarjanju bolt store: %w", err)
 	}
 
-	// Snapshot store
 	snapshotStore, err := raft.NewFileSnapshotStore(cfg.DataDir, 3, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("napaka pri ustvarjanju snapshot store: %w", err)
 	}
 
-	// Transport - POMEMBNO: uporabi resolvan IP naslov za konsistentnost
+	// Preveri, ali že obstaja Raft stanje (restart).
+	hasState, err := raft.HasExistingState(boltDB, boltDB, snapshotStore)
+	if err != nil {
+		return fmt.Errorf("napaka pri preverjanju obstoječega stanja: %w", err)
+	}
+	s.hasExistingState = hasState
+
 	addr, err := net.ResolveTCPAddr("tcp", cfg.RaftAddr)
 	if err != nil {
-		return fmt.Errorf("napaka pri resolve addr: %w", err)
+		return fmt.Errorf("napaka pri resolve raft addr: %w", err)
 	}
-
-	// Uporabi IP naslov namesto hostname za transport
 	bindAddr := addr.String()
+
 	transport, err := raft.NewTCPTransport(bindAddr, addr, 3, 10*time.Second, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("napaka pri ustvarjanju transport: %w", err)
 	}
 	s.transport = transport
 
-	// Ustvari Raft
-	r, err := raft.NewRaft(raftConfig, s.fsm, boltDB, boltDB, snapshotStore, transport)
+	r, err := raft.NewRaft(rc, s.fsm, boltDB, boltDB, snapshotStore, transport)
 	if err != nil {
 		return fmt.Errorf("napaka pri ustvarjanju raft: %w", err)
 	}
 	s.raft = r
 
-	// Bootstrap če je to prvi node
-	if cfg.Bootstrap {
-		servers := []raft.Server{
-			{
-				ID:      raft.ServerID(cfg.NodeID),
-				Address: raft.ServerAddress(cfg.RaftAddr),
-			},
-		}
-
-		// Dodaj peers če obstajajo
-		for _, p := range cfg.Peers {
-			servers = append(servers, raft.Server{
-				ID:      raft.ServerID(p.NodeID),
-				Address: raft.ServerAddress(p.RaftAddr),
-			})
-		}
-
-		future := r.BootstrapCluster(raft.Configuration{Servers: servers})
+	// Bootstrap samo na prvem node-u, in samo če ni obstoječega stanja.
+	if cfg.Bootstrap && !hasState {
+		future := r.BootstrapCluster(raft.Configuration{Servers: []raft.Server{{
+			ID:      raft.ServerID(cfg.NodeID),
+			Address: raft.ServerAddress(bindAddr),
+		}}})
 		if err := future.Error(); err != nil && err != raft.ErrCantBootstrap {
 			log.Printf("raft bootstrap warning: %v", err)
 		}
@@ -179,94 +164,40 @@ func (s *RaftServer) setupRaft(cfg RaftConfig) error {
 	return nil
 }
 
-// IsLeader vrne true če je ta node leader
-func (s *RaftServer) IsLeader() bool {
-	return s.raft.State() == raft.Leader
-}
+func (s *RaftServer) HasExistingState() bool { return s.hasExistingState }
 
-// GetLeaderAddr vrne naslov leaderja
+func (s *RaftServer) IsLeader() bool { return s.raft.State() == raft.Leader }
+
 func (s *RaftServer) GetLeaderAddr() string {
 	addr, _ := s.raft.LeaderWithID()
 	return string(addr)
 }
 
-// GetLeaderGRPCAddr vrne gRPC naslov leaderja
 func (s *RaftServer) GetLeaderGRPCAddr() string {
 	_, leaderID := s.raft.LeaderWithID()
 	if leaderID == "" {
 		return ""
 	}
-
-	// Če smo mi leader
 	if string(leaderID) == s.nodeID {
 		return s.grpcAddr
 	}
-
-	// Poišči med peeri
-	for _, p := range s.peers {
-		if p.NodeID == string(leaderID) {
-			return p.GRPCAddr
+	if p, ok := s.fsm.GetPeer(string(leaderID)); ok {
+		return p.GRPCAddr
+	}
+	for _, sp := range s.seedPeers {
+		if sp.NodeID == string(leaderID) {
+			return sp.GRPCAddr
 		}
 	}
 	return ""
 }
 
-// WaitForReplication počaka, da so vsi peerji sinhronizirani
-// Vrne true če je replikacija uspešna, false če timeout
-func (s *RaftServer) WaitForReplication(timeout time.Duration) bool {
-	if !s.IsLeader() {
-		return false
-	}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		// Barrier zagotovi, da so vsi commiti replicirani
-		future := s.raft.Barrier(time.Second)
-		if future.Error() == nil {
-			log.Printf("Replikacija uspešna - vsi peerji sinhronizirani")
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	log.Printf("Replikacija timeout po %v", timeout)
-	return false
-}
-
-// GetReplicationStatus vrne status replikacije za vsakega peerja
-func (s *RaftServer) GetReplicationStatus() map[string]uint64 {
-	stats := s.raft.Stats()
-	result := make(map[string]uint64)
-
-	// Zadnji commit index
-	if idx, ok := stats["commit_index"]; ok {
-		result["commit_index"] = parseUint64(idx)
-	}
-
-	// Zadnji applied index
-	if idx, ok := stats["applied_index"]; ok {
-		result["applied_index"] = parseUint64(idx)
-	}
-
-	// Zadnji log index
-	if idx, ok := stats["last_log_index"]; ok {
-		result["last_log_index"] = parseUint64(idx)
-	}
-
-	return result
-}
-
-func parseUint64(s string) uint64 {
-	var v uint64
-	fmt.Sscanf(s, "%d", &v)
-	return v
-}
-
-func (s *RaftServer) dialNode(addr string) (controlpb.ControlPlaneServiceClient, error) {
+func (s *RaftServer) dial(addr string) (controlpb.ControlPlaneServiceClient, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("prazen naslov")
 	}
 	s.mu.Lock()
-	if c, ok := s.cps[addr]; ok && c != nil {
+	if c := s.cps[addr]; c != nil {
 		s.mu.Unlock()
 		return c, nil
 	}
@@ -279,10 +210,10 @@ func (s *RaftServer) dialNode(addr string) (controlpb.ControlPlaneServiceClient,
 	cli := controlpb.NewControlPlaneServiceClient(cc)
 
 	s.mu.Lock()
-	if c, ok := s.cps[addr]; ok && c != nil {
+	if existing := s.cps[addr]; existing != nil {
 		s.mu.Unlock()
 		_ = cc.Close()
-		return c, nil
+		return existing, nil
 	}
 	s.conns[addr] = cc
 	s.cps[addr] = cli
@@ -290,16 +221,88 @@ func (s *RaftServer) dialNode(addr string) (controlpb.ControlPlaneServiceClient,
 	return cli, nil
 }
 
-// Heartbeat - samo leader shranjuje heartbeat
+func (s *RaftServer) apply(cmd Command, timeout time.Duration) error {
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	f := s.raft.Apply(data, timeout)
+	return f.Error()
+}
+
+func (s *RaftServer) ensureSelfPeerRegistered() {
+	for {
+		if s.raft == nil {
+			return
+		}
+		if s.IsLeader() {
+			if _, ok := s.fsm.GetPeer(s.nodeID); !ok {
+				_ = s.apply(Command{Type: CommandUpsertPeer, NodeID: s.nodeID, RaftAddr: s.raftAddr, GRPCAddr: s.grpcAddr}, 3*time.Second)
+				_ = s.raft.Barrier(2 * time.Second).Error()
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// AutoJoin poskuša dodati ta node v obstoječi Raft cluster.
+// Seed-i so gRPC naslovi control-plane node-ov (lahko followerji ali leader).
+func (s *RaftServer) AutoJoin(ctx context.Context) {
+	if s.hasExistingState {
+		return
+	}
+	if len(s.seedPeers) == 0 {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		for _, sp := range s.seedPeers {
+			addr := sp.GRPCAddr
+			cli, err := s.dial(addr)
+			if err != nil {
+				continue
+			}
+			lctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			resp, err := cli.AddPeer(lctx, &controlpb.AddPeerRequest{NodeId: s.nodeID, RaftAddr: s.raftAddr, GrpcAddr: s.grpcAddr})
+			cancel()
+			if err == nil && resp != nil && resp.GetOk() {
+				log.Printf("control %s: uspešno sem se pridružil raft clusterju prek %s", s.nodeID, addr)
+				return
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// ---- Data-plane control RPCji ----
+
+// Heartbeat: followerji forwardajo na leaderja, da leader ne odstrani data-node-a.
 func (s *RaftServer) Heartbeat(ctx context.Context, req *controlpb.HeartbeatRequest) (*controlpb.HeartbeatResponse, error) {
 	id := req.GetNodeId()
 	if id == "" {
 		return &controlpb.HeartbeatResponse{Ok: false}, nil
 	}
-
-	// Če nismo leader, preusmeri
 	if !s.IsLeader() {
-		return &controlpb.HeartbeatResponse{Ok: true, LeaderAddr: s.GetLeaderGRPCAddr()}, nil
+		leader := s.GetLeaderGRPCAddr()
+		if leader == "" {
+			return &controlpb.HeartbeatResponse{Ok: false, LeaderAddr: ""}, nil
+		}
+		cli, err := s.dial(leader)
+		if err != nil {
+			return &controlpb.HeartbeatResponse{Ok: false, LeaderAddr: leader}, nil
+		}
+		resp, err := cli.Heartbeat(ctx, req)
+		if err != nil {
+			return &controlpb.HeartbeatResponse{Ok: false, LeaderAddr: leader}, nil
+		}
+		return resp, nil
 	}
 
 	s.mu.Lock()
@@ -308,44 +311,35 @@ func (s *RaftServer) Heartbeat(ctx context.Context, req *controlpb.HeartbeatRequ
 	return &controlpb.HeartbeatResponse{Ok: true}, nil
 }
 
-// JoinChain - samo leader lahko spreminja verigo
+// JoinChain: piše samo leader; followerji forwardajo.
 func (s *RaftServer) JoinChain(ctx context.Context, req *controlpb.JoinChainRequest) (*controlpb.JoinChainResponse, error) {
 	n := req.GetNode()
 	if n == nil || n.GetNodeId() == "" || n.GetAddress() == "" {
 		return nil, fmt.Errorf("JoinChain: neveljaven node")
 	}
-
-	// Če nismo leader, vrni error z naslovom leaderja
 	if !s.IsLeader() {
-		return nil, fmt.Errorf("nisem leader, poskusi na: %s", s.GetLeaderGRPCAddr())
+		leader := s.GetLeaderGRPCAddr()
+		if leader == "" {
+			return nil, fmt.Errorf("nisem leader in leader ni znan")
+		}
+		cli, err := s.dial(leader)
+		if err != nil {
+			return nil, fmt.Errorf("nisem leader, poskusi na: %s", leader)
+		}
+		return cli.JoinChain(ctx, req)
 	}
 
-	// Ustvari ukaz
-	cmd := Command{
-		Type:   CommandJoin,
-		NodeID: n.GetNodeId(),
-		Addr:   n.GetAddress(),
-	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("napaka pri marshal: %w", err)
-	}
-
-	// Apliciraj preko Raft
-	future := s.raft.Apply(data, 5*time.Second)
-	if err := future.Error(); err != nil {
+	if err := s.apply(Command{Type: CommandJoin, NodeID: n.GetNodeId(), Addr: n.GetAddress()}, 5*time.Second); err != nil {
 		return nil, fmt.Errorf("raft apply error: %w", err)
 	}
 
-	// Posodobi heartbeat
+	// Ob pridružitvi šte... (leader only).
 	s.mu.Lock()
 	s.lastHB[n.GetNodeId()] = time.Now()
 	s.mu.Unlock()
 
-	// Pridobi sosede iz FSM
 	idx := s.fsm.NodeIndex(n.GetNodeId())
 	chain := s.fsm.GetChain()
-
 	var prev, next *controlpb.NodeInfo
 	if idx > 0 && idx < len(chain) {
 		prev = chain[idx-1]
@@ -354,27 +348,20 @@ func (s *RaftServer) JoinChain(ctx context.Context, req *controlpb.JoinChainRequ
 		next = chain[idx+1]
 	}
 
-	// Broadcast neighbors
 	go s.broadcastNeighbors()
-
 	return &controlpb.JoinChainResponse{Previous: prev, Next: next, SyncFrom: prev}, nil
 }
 
-// GetChain vrne trenutno verigo
 func (s *RaftServer) GetChain(ctx context.Context, _ *controlpb.GetChainRequest) (*controlpb.GetChainResponse, error) {
 	chain := s.fsm.GetChain()
-	return &controlpb.GetChainResponse{
-		Chain: chain,
-		Head:  s.fsm.GetHead(),
-		Tail:  s.fsm.GetTail(),
-	}, nil
+	return &controlpb.GetChainResponse{Chain: chain, Head: s.fsm.GetHead(), Tail: s.fsm.GetTail()}, nil
 }
 
-// GetClusterState - public API za odjemalce
+// ---- Public API (client side) ----
+
 func (s *RaftServer) GetClusterState(ctx context.Context, _ *emptypb.Empty) (*publicpb.GetClusterStateResponse, error) {
 	head := s.fsm.GetHead()
 	tail := s.fsm.GetTail()
-
 	var h, t *publicpb.NodeInfo
 	if head != nil {
 		h = &publicpb.NodeInfo{NodeId: head.GetNodeId(), Address: head.GetAddress()}
@@ -385,27 +372,120 @@ func (s *RaftServer) GetClusterState(ctx context.Context, _ *emptypb.Empty) (*pu
 	return &publicpb.GetClusterStateResponse{Head: h, Tail: t}, nil
 }
 
+// ---- Raft peer management RPCji ----
+
+func (s *RaftServer) AddPeer(ctx context.Context, req *controlpb.AddPeerRequest) (*controlpb.AddPeerResponse, error) {
+	if req.GetNodeId() == "" || req.GetRaftAddr() == "" || req.GetGrpcAddr() == "" {
+		return &controlpb.AddPeerResponse{Ok: false, Error: "neveljaven AddPeerRequest"}, nil
+	}
+
+	if !s.IsLeader() {
+		leader := s.GetLeaderGRPCAddr()
+		if leader != "" {
+			cli, err := s.dial(leader)
+			if err == nil {
+				return cli.AddPeer(ctx, req)
+			}
+		}
+		return &controlpb.AddPeerResponse{Ok: false, Error: fmt.Sprintf("nisem leader, poskusi na: %s", leader)}, nil
+	}
+
+	raftAddr := req.GetRaftAddr()
+	if a, err := net.ResolveTCPAddr("tcp", raftAddr); err == nil {
+		raftAddr = a.String()
+	}
+
+	future := s.raft.AddVoter(raft.ServerID(req.GetNodeId()), raft.ServerAddress(raftAddr), 0, 10*time.Second)
+	if err := future.Error(); err != nil {
+		return &controlpb.AddPeerResponse{Ok: false, Error: err.Error()}, nil
+	}
+
+	// Replikiraj meta podatke peerja (node_id -> grpc_addr), da followerji znajo redirectat.
+	if err := s.apply(Command{Type: CommandUpsertPeer, NodeID: req.GetNodeId(), RaftAddr: raftAddr, GRPCAddr: req.GetGrpcAddr()}, 5*time.Second); err != nil {
+		return &controlpb.AddPeerResponse{Ok: false, Error: err.Error()}, nil
+	}
+	_ = s.raft.Barrier(2 * time.Second).Error()
+
+	log.Printf("control: peer %s dodan (raft=%s grpc=%s)", req.GetNodeId(), raftAddr, req.GetGrpcAddr())
+	return &controlpb.AddPeerResponse{Ok: true}, nil
+}
+
+func (s *RaftServer) RemovePeer(ctx context.Context, req *controlpb.RemovePeerRequest) (*controlpb.RemovePeerResponse, error) {
+	if req.GetNodeId() == "" {
+		return &controlpb.RemovePeerResponse{Ok: false, Error: "prazen node_id"}, nil
+	}
+	if !s.IsLeader() {
+		leader := s.GetLeaderGRPCAddr()
+		if leader != "" {
+			cli, err := s.dial(leader)
+			if err == nil {
+				return cli.RemovePeer(ctx, req)
+			}
+		}
+		return &controlpb.RemovePeerResponse{Ok: false, Error: fmt.Sprintf("nisem leader, poskusi na: %s", leader)}, nil
+	}
+
+	f := s.raft.RemoveServer(raft.ServerID(req.GetNodeId()), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return &controlpb.RemovePeerResponse{Ok: false, Error: err.Error()}, nil
+	}
+	_ = s.apply(Command{Type: CommandRemovePeer, NodeID: req.GetNodeId()}, 3*time.Second)
+	_ = s.raft.Barrier(2 * time.Second).Error()
+
+	log.Printf("control: peer %s odstranjen", req.GetNodeId())
+	return &controlpb.RemovePeerResponse{Ok: true}, nil
+}
+
+func (s *RaftServer) GetRaftState(ctx context.Context, _ *controlpb.GetRaftStateRequest) (*controlpb.GetRaftStateResponse, error) {
+	leaderAddr, leaderID := s.raft.LeaderWithID()
+
+	// Konfiguracija iz Rafta.
+	confF := s.raft.GetConfiguration()
+	if err := confF.Error(); err != nil {
+		return &controlpb.GetRaftStateResponse{IsLeader: s.IsLeader(), LeaderId: string(leaderID), LeaderAddr: string(leaderAddr), State: s.raft.State().String()}, nil
+	}
+	conf := confF.Configuration()
+
+	peers := make([]*controlpb.RaftPeer, 0, len(conf.Servers))
+	for _, srv := range conf.Servers {
+		id := string(srv.ID)
+		ra := string(srv.Address)
+		ga := ""
+		if id == s.nodeID {
+			ga = s.grpcAddr
+		} else if p, ok := s.fsm.GetPeer(id); ok {
+			ga = p.GRPCAddr
+		} else {
+			for _, sp := range s.seedPeers {
+				if sp.NodeID == id {
+					ga = sp.GRPCAddr
+					break
+				}
+			}
+		}
+		peers = append(peers, &controlpb.RaftPeer{NodeId: id, RaftAddr: ra, GrpcAddr: ga})
+	}
+
+	return &controlpb.GetRaftStateResponse{
+		IsLeader:   s.IsLeader(),
+		LeaderId:   string(leaderID),
+		LeaderAddr: string(leaderAddr),
+		Peers:      peers,
+		State:      s.raft.State().String(),
+	}, nil
+}
+
+// ---- Chain neighbor updates and failure monitoring ----
+
 func (s *RaftServer) removeNodeFromChain(nodeID string) error {
 	if !s.IsLeader() {
 		return fmt.Errorf("nisem leader")
 	}
-
-	cmd := Command{
-		Type:   CommandRemove,
-		NodeID: nodeID,
-	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-
-	future := s.raft.Apply(data, 5*time.Second)
-	return future.Error()
+	return s.apply(Command{Type: CommandRemove, NodeID: nodeID}, 5*time.Second)
 }
 
 func (s *RaftServer) broadcastNeighbors() {
 	chain := s.fsm.GetChain()
-
 	for i, self := range chain {
 		var prev, next *controlpb.NodeInfo
 		if i > 0 {
@@ -414,30 +494,23 @@ func (s *RaftServer) broadcastNeighbors() {
 		if i+1 < len(chain) {
 			next = chain[i+1]
 		}
-
-		cli, err := s.dialNode(self.GetAddress())
+		cli, err := s.dial(self.GetAddress())
 		if err != nil {
-			log.Printf("control: ne morem dial %s (%s): %v", self.GetNodeId(), self.GetAddress(), err)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-		_, err = cli.UpdateNeighbors(ctx, &controlpb.UpdateNeighborsRequest{Self: self, Previous: prev, Next: next})
+		cctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+		_, _ = cli.UpdateNeighbors(cctx, &controlpb.UpdateNeighborsRequest{Self: self, Previous: prev, Next: next})
 		cancel()
-		if err != nil {
-			log.Printf("control: UpdateNeighbors failed %s (%s): %v", self.GetNodeId(), self.GetAddress(), err)
-		}
 	}
 }
 
 func (s *RaftServer) monitorFailures() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		// Samo leader monitora
+	t := time.NewTicker(1 * time.Second)
+	defer t.Stop()
+	for range t.C {
 		if !s.IsLeader() {
 			continue
 		}
-
 		now := time.Now()
 		chain := s.fsm.GetChain()
 
@@ -447,32 +520,28 @@ func (s *RaftServer) monitorFailures() {
 			if n == nil {
 				continue
 			}
-			t, ok := s.lastHB[n.GetNodeId()]
+			last, ok := s.lastHB[n.GetNodeId()]
 			if !ok {
-				// Node še ni poslal heartbeata - preskočimo (šele se je pridružil)
+				// še ni prejel HB po menjavi leaderja -> ne odstranjuj
 				continue
 			}
-			// Če je timeout potekel in je node vsaj enkrat poslal heartbeat
-			if now.Sub(t) > s.hbTimeout {
+			if now.Sub(last) > s.hbTimeout {
 				dead = append(dead, n.GetNodeId())
 			}
 		}
 		s.mu.Unlock()
 
-		if len(dead) == 0 {
-			continue
-		}
 		for _, id := range dead {
 			log.Printf("control: node %s timeout -> odstranim iz verige", id)
-			if err := s.removeNodeFromChain(id); err != nil {
-				log.Printf("control: napaka pri odstranjevanju %s: %v", id, err)
-			}
+			_ = s.removeNodeFromChain(id)
 		}
-		s.broadcastNeighbors()
+		if len(dead) > 0 {
+			go s.broadcastNeighbors()
+		}
 	}
 }
 
-// Serve zažene gRPC strežnik
+// Serve zažene gRPC strežnik.
 func (s *RaftServer) Serve() error {
 	lis, err := net.Listen("tcp", s.grpcAddr)
 	if err != nil {
@@ -482,13 +551,12 @@ func (s *RaftServer) Serve() error {
 	gs := grpc.NewServer()
 
 	// health
-	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(gs, healthSrv)
+	hs := health.NewServer()
+	hs.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	grpc_health_v1.RegisterHealthServer(gs, hs)
 
 	controlpb.RegisterControlPlaneServiceServer(gs, s)
 	publicpb.RegisterControlPlaneServer(gs, s)
-
 	reflection.Register(gs)
 
 	go s.monitorFailures()
@@ -497,119 +565,22 @@ func (s *RaftServer) Serve() error {
 	return gs.Serve(lis)
 }
 
-// Shutdown ustavi strežnik
 func (s *RaftServer) Shutdown() error {
 	if s.raft != nil {
-		future := s.raft.Shutdown()
-		if err := future.Error(); err != nil {
+		f := s.raft.Shutdown()
+		if err := f.Error(); err != nil {
 			return err
 		}
 	}
 	if s.transport != nil {
 		s.transport.Close()
 	}
+	s.mu.Lock()
+	for _, cc := range s.conns {
+		_ = cc.Close()
+	}
+	s.conns = make(map[string]*grpc.ClientConn)
+	s.cps = make(map[string]controlpb.ControlPlaneServiceClient)
+	s.mu.Unlock()
 	return nil
-}
-
-// GetRaftStats vrne statistiko Raft
-func (s *RaftServer) GetRaftStats() map[string]string {
-	return s.raft.Stats()
-}
-
-// AddPeer RPC - doda nov peer v Raft cluster
-func (s *RaftServer) AddPeer(ctx context.Context, req *controlpb.AddPeerRequest) (*controlpb.AddPeerResponse, error) {
-	if !s.IsLeader() {
-		return &controlpb.AddPeerResponse{Ok: false, Error: fmt.Sprintf("nisem leader, poskusi na: %s", s.GetLeaderGRPCAddr())}, nil
-	}
-
-	// Uporabi konsistenten IP naslov (resolve hostname)
-	raftAddr := req.GetRaftAddr()
-	if addr, err := net.ResolveTCPAddr("tcp", raftAddr); err == nil {
-		raftAddr = addr.String() // Uporabi resolved IP
-	}
-
-	log.Printf("Dodajam peer %s z Raft naslovom %s", req.GetNodeId(), raftAddr)
-
-	future := s.raft.AddVoter(raft.ServerID(req.GetNodeId()), raft.ServerAddress(raftAddr), 0, 10*time.Second)
-	if err := future.Error(); err != nil {
-		return &controlpb.AddPeerResponse{Ok: false, Error: err.Error()}, nil
-	}
-
-	// Shrani peer info
-	s.mu.Lock()
-	s.peers = append(s.peers, PeerConfig{
-		NodeID:   req.GetNodeId(),
-		RaftAddr: raftAddr,
-		GRPCAddr: req.GetGrpcAddr(),
-	})
-	s.mu.Unlock()
-
-	// Počakaj, da se replikacija zaključi
-	log.Printf("Čakam na replikacijo za peer %s...", req.GetNodeId())
-	if !s.WaitForReplication(5 * time.Second) {
-		log.Printf("OPOZORILO: replikacija za %s še ni končana", req.GetNodeId())
-	}
-
-	log.Printf("Peer %s (%s) dodan v cluster", req.GetNodeId(), raftAddr)
-	return &controlpb.AddPeerResponse{Ok: true}, nil
-}
-
-// RemovePeer RPC - odstrani peer iz Raft cluster
-func (s *RaftServer) RemovePeer(ctx context.Context, req *controlpb.RemovePeerRequest) (*controlpb.RemovePeerResponse, error) {
-	if !s.IsLeader() {
-		return &controlpb.RemovePeerResponse{Ok: false, Error: fmt.Sprintf("nisem leader, poskusi na: %s", s.GetLeaderGRPCAddr())}, nil
-	}
-
-	future := s.raft.RemoveServer(raft.ServerID(req.GetNodeId()), 0, 10*time.Second)
-	if err := future.Error(); err != nil {
-		return &controlpb.RemovePeerResponse{Ok: false, Error: err.Error()}, nil
-	}
-
-	// Odstrani peer info
-	s.mu.Lock()
-	for i, p := range s.peers {
-		if p.NodeID == req.GetNodeId() {
-			s.peers = append(s.peers[:i], s.peers[i+1:]...)
-			break
-		}
-	}
-	s.mu.Unlock()
-
-	log.Printf("Peer %s odstranjen iz clusterja", req.GetNodeId())
-	return &controlpb.RemovePeerResponse{Ok: true}, nil
-}
-
-// GetRaftState RPC - vrne stanje Raft clusterja
-func (s *RaftServer) GetRaftState(ctx context.Context, req *controlpb.GetRaftStateRequest) (*controlpb.GetRaftStateResponse, error) {
-	leaderAddr, leaderID := s.raft.LeaderWithID()
-
-	peers := make([]*controlpb.RaftPeer, 0, len(s.peers)+1)
-
-	// Dodaj sebe
-	peers = append(peers, &controlpb.RaftPeer{
-		NodeId:   s.nodeID,
-		RaftAddr: s.raftAddr,
-		GrpcAddr: s.grpcAddr,
-	})
-
-	// Dodaj ostale peer-e
-	s.mu.Lock()
-	for _, p := range s.peers {
-		peers = append(peers, &controlpb.RaftPeer{
-			NodeId:   p.NodeID,
-			RaftAddr: p.RaftAddr,
-			GrpcAddr: p.GRPCAddr,
-		})
-	}
-	s.mu.Unlock()
-
-	state := s.raft.State().String()
-
-	return &controlpb.GetRaftStateResponse{
-		IsLeader:   s.IsLeader(),
-		LeaderId:   string(leaderID),
-		LeaderAddr: string(leaderAddr),
-		Peers:      peers,
-		State:      state,
-	}, nil
 }

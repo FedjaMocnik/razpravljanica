@@ -415,7 +415,7 @@ func TestFSM(t *testing.T) {
 	}
 
 	// Test Update
-	fsm.applyUpdate("node1", "localhost:9001")
+	fsm.applyUpdateNode("node1", "localhost:9001")
 	chain = fsm.GetChain()
 	if chain[0].Address != "localhost:9001" {
 		t.Errorf("pričakoval sem naslov localhost:9001, dobil %s", chain[0].Address)

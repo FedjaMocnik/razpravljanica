@@ -5,12 +5,11 @@ import (
 	"log"
 	"time"
 
+	"github.com/FedjaMocnik/razpravljalnica/internal/controlclient"
 	"github.com/FedjaMocnik/razpravljalnica/internal/replication"
 	controlpb "github.com/FedjaMocnik/razpravljalnica/pkgs/control/pb"
 	api "github.com/FedjaMocnik/razpravljalnica/pkgs/public/api"
 	publicpb "github.com/FedjaMocnik/razpravljalnica/pkgs/public/pb"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // ControlNodeServer implementira ControlPlaneService na strani node-a
@@ -18,15 +17,15 @@ import (
 type ControlNodeServer struct {
 	controlpb.UnimplementedControlPlaneServiceServer
 
-	nodeID      string
-	controlAddr string
+	nodeID  string
+	control *controlclient.Client
 
 	repl *replication.Manager
 	mb   *api.MessageBoardServer
 }
 
-func New(nodeID, controlAddr string, repl *replication.Manager, mb *api.MessageBoardServer) *ControlNodeServer {
-	return &ControlNodeServer{nodeID: nodeID, controlAddr: controlAddr, repl: repl, mb: mb}
+func New(nodeID string, control *controlclient.Client, repl *replication.Manager, mb *api.MessageBoardServer) *ControlNodeServer {
+	return &ControlNodeServer{nodeID: nodeID, control: control, repl: repl, mb: mb}
 }
 
 func (s *ControlNodeServer) UpdateNeighbors(ctx context.Context, req *controlpb.UpdateNeighborsRequest) (*controlpb.UpdateNeighborsResponse, error) {
@@ -68,27 +67,14 @@ func (s *ControlNodeServer) UpdateNeighbors(ctx context.Context, req *controlpb.
 }
 
 func (s *ControlNodeServer) fetchChain() []*publicpb.NodeInfo {
-	if s.controlAddr == "" {
+	if s.control == nil {
 		return nil
 	}
-	cc, err := grpc.NewClient(s.controlAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = cc.Close() }()
-	cli := controlpb.NewControlPlaneServiceClient(cc)
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
-	resp, err := cli.GetChain(ctx, &controlpb.GetChainRequest{})
+	chain, err := s.control.GetChain(ctx)
 	if err != nil {
 		return nil
 	}
-	out := make([]*publicpb.NodeInfo, 0, len(resp.GetChain()))
-	for _, n := range resp.GetChain() {
-		if n == nil {
-			continue
-		}
-		out = append(out, &publicpb.NodeInfo{NodeId: n.GetNodeId(), Address: n.GetAddress()})
-	}
-	return out
+	return chain
 }

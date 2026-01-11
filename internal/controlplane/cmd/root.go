@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,23 +46,7 @@ func runRaftServer() error {
 	fmt.Printf("Zaganjam Raft control unit %s (gRPC: %s, Raft: %s, bootstrap: %v)\n",
 		nodeID, addr, raftAddr, bootstrap)
 
-	// Parse peers
-	var peerConfigs []cp.PeerConfig
-	if peers != "" {
-		if err := json.Unmarshal([]byte(peers), &peerConfigs); err != nil {
-			// Poskusi enostavnejši format: node1:raft1:grpc1,node2:raft2:grpc2
-			for _, p := range strings.Split(peers, ",") {
-				parts := strings.Split(p, ":")
-				if len(parts) >= 3 {
-					peerConfigs = append(peerConfigs, cp.PeerConfig{
-						NodeID:   parts[0],
-						RaftAddr: parts[1] + ":" + parts[2],
-						GRPCAddr: parts[3] + ":" + parts[4],
-					})
-				}
-			}
-		}
-	}
+	peerConfigs := parsePeersFlag(peers)
 
 	cfg := cp.RaftConfig{
 		NodeID:    nodeID,
@@ -78,7 +63,55 @@ func runRaftServer() error {
 		return fmt.Errorf("napaka pri ustvarjanju raft serverja: %w", err)
 	}
 
+	// Če to ni bootstrap node in še nima stanja na disku, poskusi auto-join na obstoječi cluster.
+	// AutoJoin teče v ozadju; Serve() blokira.
+	if !bootstrap {
+		go srv.AutoJoin(context.Background())
+	}
+
 	return srv.Serve()
+}
+
+func parsePeersFlag(s string) []cp.PeerConfig {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []cp.PeerConfig
+	// 1) JSON format: [{"node_id":...,"raft_addr":...,"grpc_addr":...}, ...]
+	if err := json.Unmarshal([]byte(s), &out); err == nil {
+		return out
+	}
+	// 2) Compact formats (comma-separated):
+	//    - id=raftAddr=grpcAddr
+	//    - id@raftAddr@grpcAddr
+	//    - legacy: id:raftHost:raftPort:grpcHost:grpcPort
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(tok, "=") {
+			parts := strings.Split(tok, "=")
+			if len(parts) >= 3 {
+				out = append(out, cp.PeerConfig{NodeID: parts[0], RaftAddr: parts[1], GRPCAddr: parts[2]})
+				continue
+			}
+		}
+		if strings.Contains(tok, "@") {
+			parts := strings.Split(tok, "@")
+			if len(parts) >= 3 {
+				out = append(out, cp.PeerConfig{NodeID: parts[0], RaftAddr: parts[1], GRPCAddr: parts[2]})
+				continue
+			}
+		}
+		parts := strings.Split(tok, ":")
+		if len(parts) >= 5 {
+			out = append(out, cp.PeerConfig{NodeID: parts[0], RaftAddr: parts[1] + ":" + parts[2], GRPCAddr: parts[3] + ":" + parts[4]})
+			continue
+		}
+	}
+	return out
 }
 
 func Execute() {
