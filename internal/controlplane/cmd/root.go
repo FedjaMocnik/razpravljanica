@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	addr      string
-	hbTimeout time.Duration
+	addr        string
+	hbTimeout   time.Duration
+	tokenSecret string
 )
 
 var rootCmd = &cobra.Command{
@@ -20,7 +21,7 @@ var rootCmd = &cobra.Command{
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Zaganjam control unit na %s (heartbeat timeout=%s) ...\n", addr, hbTimeout)
-		srv := cp.New(hbTimeout)
+		srv := cp.NewWithConfig(hbTimeout, tokenSecret)
 		return srv.Serve(addr)
 	},
 }
@@ -35,4 +36,5 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&addr, "naslov", "localhost:9999", "Naslov control unit strežnika (npr. localhost:9999)")
 	rootCmd.PersistentFlags().DurationVar(&hbTimeout, "hb-timeout", 2*time.Second, "Heartbeat timeout (npr. 2s)")
+	rootCmd.PersistentFlags().StringVar(&tokenSecret, "token-secret", "devsecret", "Skrivnost za subscribe tokene (mora biti enaka na vseh vozliščih)")
 }

@@ -656,6 +656,8 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	if entry == nil {
 		return nil, fmt.Errorf("manjka entry")
 	}
+	// log.Printf("[%s] Prejeta Forward zahteva za vnos %d", m.nodeID, entry.EntryId)
+
 	if err := m.applyEntry(ctx, entry, false); err != nil {
 		// Idempotentnost + strict ordering se uveljavlja v applyEntry (EntryId mora priti zaporedno).
 		return nil, err
@@ -664,6 +666,11 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	// Posreduj naslednjemu, če obstaja.
 	m.mu.Lock()
 	isTail := m.isTail
+
+	// addr za loge.
+	nextAddr := m.nextAddr
+	prevAddr := m.prevAddr
+
 	nextClient, err := m.dialNextLocked()
 	prevClient, prevErr := m.dialPrevLocked()
 	m.mu.Unlock()
@@ -676,6 +683,8 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	}
 
 	var committed uint64
+	log.Printf("[%s] Posredujem vnos %d naprej na %s", m.nodeID, entry.EntryId, nextAddr)
+
 	if nextClient != nil {
 		backoff := 80 * time.Millisecond
 		deadline := time.Now().Add(3 * time.Second)
@@ -702,6 +711,8 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 	if isTail {
 		// Na repu verige se entry smatra kot committed takoj, ko je apliciran na tail-u.
 		// Nato se Commit sinhrono pošlje nazaj prejšnjemu node-u (da ohranimo ordering commitov).
+
+		log.Printf("[%s] Rep verige: vnos %d potrjen (committed)", m.nodeID, entry.EntryId)
 		committed = entry.EntryId
 		// Na repu verige commitamo takoj in commit posredujemo nazaj po verigi.
 		m.mu.Lock()
@@ -711,7 +722,9 @@ func (m *Manager) Forward(ctx context.Context, req *privatepb.ForwardRequest) (*
 		m.mu.Unlock()
 		// Na tail-u je entry commit-an takoj.
 		m.state.AdvanceCommittedSequence(int64(committed))
+
 		if prevClient != nil {
+			log.Printf("[%s] Pošiljam Commit za vnos %d nazaj na %s", m.nodeID, committed, prevAddr)
 			// sinhron commit za ohranitev vrstnega reda
 			_, _ = prevClient.Commit(ctx, &privatepb.CommitRequest{CommittedEntryId: committed})
 		}
@@ -748,6 +761,8 @@ func (m *Manager) Commit(ctx context.Context, req *privatepb.CommitRequest) (*em
 		}
 	}
 	prevClient, err := m.dialPrevLocked()
+	prevAddr := m.prevAddr
+
 	m.mu.Unlock()
 	// Posodobi vidnost commit-anih dogodkov (gating naročnin + deduplikacija všečkov).
 	m.state.AdvanceCommittedSequence(int64(commitID))
@@ -760,6 +775,7 @@ func (m *Manager) Commit(ctx context.Context, req *privatepb.CommitRequest) (*em
 
 	// Posreduj nazaj po verigi.
 	if prevClient != nil {
+		log.Printf("[%s] Pošiljam Commit za vnos %d nazaj na %s", m.nodeID, commitID, prevAddr)
 		_, _ = prevClient.Commit(ctx, req)
 	}
 	return &emptypb.Empty{}, nil
@@ -861,17 +877,21 @@ func (m *Manager) rollbackHeadUncommitted() {
 
 func (m *Manager) forwardToNext(ctx context.Context, e *privatepb.LogEntry) error {
 	m.mu.Lock()
+	nextAddr := m.nextAddr
 	client, err := m.dialNextLocked()
 	m.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	if client == nil {
+		log.Printf("[%s] Ni naslednika (single mode), lokalni commit vnosa %d", m.nodeID, e.EntryId)
 		// enovozliščna postavitev (samo eno vozlišče)
 		// commitaj lokalno
 		_, _ = m.Commit(ctx, &privatepb.CommitRequest{CommittedEntryId: e.EntryId})
 		return nil
 	}
+	log.Printf("[%s] Začenjam Forward vnosa %d na %s", m.nodeID, e.EntryId, nextAddr)
+
 	_, err = client.Forward(ctx, &privatepb.ForwardRequest{Entry: e})
 	if err == nil {
 		return nil
