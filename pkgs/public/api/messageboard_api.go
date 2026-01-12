@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"sort"
 	"sync"
 
@@ -132,6 +133,7 @@ func (s *MessageBoardServer) pickSubscriptionNode(userID int64, topicIDs []int64
 }
 
 func (s *MessageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
+	log.Printf("[%s] Prejeta zahteva za ustvarjanje uporabnika: %s", s.podatkiVozlisca.GetNodeId(), req.GetName())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -151,6 +153,7 @@ func (s *MessageBoardServer) CreateUser(ctx context.Context, req *pb.CreateUserR
 }
 
 func (s *MessageBoardServer) CreateTopic(ctx context.Context, req *pb.CreateTopicRequest) (*pb.Topic, error) {
+	log.Printf("[%s] Prejeta zahteva za ustvarjanje teme: %s", s.podatkiVozlisca.GetNodeId(), req.GetName())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -169,6 +172,7 @@ func (s *MessageBoardServer) CreateTopic(ctx context.Context, req *pb.CreateTopi
 }
 
 func (s *MessageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessageRequest) (*pb.Message, error) {
+	log.Printf("[%s] Prejeta zahteva za objavo sporočila uporabnika %d na temo %d", s.podatkiVozlisca.GetNodeId(), req.GetUserId(), req.GetTopicId())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -212,6 +216,7 @@ func (s *MessageBoardServer) PostMessage(ctx context.Context, req *pb.PostMessag
 }
 
 func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMessageRequest) (*pb.Message, error) {
+	log.Printf("[%s] Prejeta zahteva za posodobitev sporočila %d uporabnika %d", s.podatkiVozlisca.GetNodeId(), req.GetMessageId(), req.GetUserId())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -256,6 +261,7 @@ func (s *MessageBoardServer) UpdateMessage(ctx context.Context, req *pb.UpdateMe
 }
 
 func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMessageRequest) (*emptypb.Empty, error) {
+	log.Printf("[%s] Prejeta zahteva za izbris sporočila %d uporabnika %d", s.podatkiVozlisca.GetNodeId(), req.GetMessageId(), req.GetUserId())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -301,6 +307,8 @@ func (s *MessageBoardServer) DeleteMessage(ctx context.Context, req *pb.DeleteMe
 }
 
 func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessageRequest) (*pb.Message, error) {
+	log.Printf("[%s] Prejeta zahteva za všečkanje sporočila %d s strani uporabnika %d", s.podatkiVozlisca.GetNodeId(), req.GetMessageId(), req.GetUserId())
+
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -326,6 +334,7 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 	if !changed {
 		return updated, nil
 	}
+
 	now := timestamppb.Now()
 	seq := int64(0)
 	if s.repl == nil {
@@ -350,6 +359,7 @@ func (s *MessageBoardServer) LikeMessage(ctx context.Context, req *pb.LikeMessag
 }
 
 func (s *MessageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.SubscriptionNodeRequest) (*pb.SubscriptionNodeResponse, error) {
+	log.Printf("[%s] Zahteva za informacije o naročnini za uporabnika %d na teme %v", s.podatkiVozlisca.GetNodeId(), req.GetUserId(), req.GetTopicId())
 	if err := s.requireHead(); err != nil {
 		return nil, err
 	}
@@ -390,6 +400,7 @@ func (s *MessageBoardServer) GetSubscriptionNode(ctx context.Context, req *pb.Su
 }
 
 func (s *MessageBoardServer) ListTopics(ctx context.Context, _ *emptypb.Empty) (*pb.ListTopicsResponse, error) {
+	log.Printf("[%s] Zahteva za seznam tem", s.podatkiVozlisca.GetNodeId())
 	if err := s.requireTail(); err != nil {
 		return nil, err
 	}
@@ -398,6 +409,9 @@ func (s *MessageBoardServer) ListTopics(ctx context.Context, _ *emptypb.Empty) (
 }
 
 func (s *MessageBoardServer) GetMessages(ctx context.Context, req *pb.GetMessagesRequest) (*pb.GetMessagesResponse, error) {
+
+	log.Printf("[%s] Zahteva za pridobitev sporočil na temi %d", s.podatkiVozlisca.GetNodeId(), req.GetTopicId())
+
 	if err := s.requireTail(); err != nil {
 		return nil, err
 	}
@@ -411,6 +425,8 @@ func (s *MessageBoardServer) GetMessages(ctx context.Context, req *pb.GetMessage
 }
 
 func (s *MessageBoardServer) SubscribeTopic(req *pb.SubscribeTopicRequest, stream grpc.ServerStreamingServer[pb.MessageEvent]) error {
+	log.Printf("[%s] Nova naročnina za uporabnika %d na teme %v", s.podatkiVozlisca.GetNodeId(), req.GetUserId(), req.GetTopicId())
+
 	if len(req.GetTopicId()) == 0 {
 		return status.Error(codes.InvalidArgument, "Ni podanih tem.")
 	}

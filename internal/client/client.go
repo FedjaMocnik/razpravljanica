@@ -60,6 +60,7 @@ func (o *Odjemalec) getClusterState(ctx context.Context) (*pb.GetClusterStateRes
 	return o.control.GetClusterState(ctx, &emptypb.Empty{})
 }
 
+// Pod ključavnico naredimo client, da ne zaženemo dveh grpc povezav.
 func (o *Odjemalec) mbClient(addr string) (pb.MessageBoardClient, error) {
 	o.mu.Lock()
 	if c, ok := o.mbs[addr]; ok {

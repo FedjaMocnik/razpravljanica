@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	addr      string
-	hbTimeout time.Duration
+	addr        string
+	hbTimeout   time.Duration
+	tokenSecret string
 	// Raft flags
 	nodeID    string
 	raftAddr  string
@@ -38,7 +39,7 @@ var rootCmd = &cobra.Command{
 
 func runLegacyServer() error {
 	fmt.Printf("Zaganjam control unit na %s (heartbeat timeout=%s) ...\n", addr, hbTimeout)
-	srv := cp.New(hbTimeout)
+	srv := cp.NewWithConfig(hbTimeout, tokenSecret)
 	return srv.Serve(addr)
 }
 
@@ -124,7 +125,8 @@ func Execute() {
 func init() {
 	// Legacy flags
 	rootCmd.PersistentFlags().StringVar(&addr, "naslov", "localhost:9999", "Naslov gRPC strežnika (npr. localhost:9999)")
-	rootCmd.PersistentFlags().DurationVar(&hbTimeout, "hb-timeout", 30*time.Second, "Heartbeat timeout za data serverje (npr. 30s)")
+	rootCmd.PersistentFlags().DurationVar(&hbTimeout, "hb-timeout", 2*time.Second, "Heartbeat timeout (npr. 2s)")
+	rootCmd.PersistentFlags().StringVar(&tokenSecret, "token-secret", "devsecret", "Skrivnost za subscribe tokene (mora biti enaka na vseh vozliščih)")
 
 	// Raft flags
 	rootCmd.PersistentFlags().BoolVar(&useRaft, "raft", false, "Uporabi Raft za replikacijo control plane")
