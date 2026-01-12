@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	controlpb "github.com/FedjaMocnik/razpravljalnica/pkgs/control/pb"
@@ -30,6 +31,7 @@ const (
 	maxBackoff          = 30 * time.Second
 	crashWindowDuration = 10 * time.Second // Če node preživi toliko časa, resetiramo števec napak.
 	serverBinaryPath    = "./server"
+	nodeLogDir          = "./logs/nodes" // Direktorij za loge neodvisnih node procesov.
 )
 
 // RespawnRequest predstavlja zahtevo za ponovni zagon node-a, ki je propadel.
@@ -107,18 +109,35 @@ func (r *Respawner) Start() {
 	log.Printf("respawner: zagnan %d worker(s), velikost queue=%d", respawnWorkers, respawnQueueSize)
 }
 
-// Stop je način, da kontrolirano ustavimo vse procese, da ne prepustimo OS.
+// Stop ustavi respawner worker-je.
 func (r *Respawner) Stop() {
 	close(r.stopCh)
 	r.wg.Wait()
+	// zdej pustimo serverje na mir.
 
-	// Ubij vse zagnane procese.
+	log.Printf("respawner: ustavljen. Neodvisni node procesi še vedno tečejo.")
+}
+
+// StopAndKillNodes ustavi respawner IN ubije vse znane node.
+func (r *Respawner) StopAndKillNodes() {
+	close(r.stopCh)
+	r.wg.Wait()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// ustavimo preko PID.
 	for nodeID, sp := range r.spawned {
-		if sp.Cmd != nil && sp.Cmd.Process != nil {
-			log.Printf("respawner: ubijam zagnan proces %s (PID %d)", nodeID, sp.PID)
-			_ = sp.Cmd.Process.Kill()
+		if sp.PID > 0 {
+			log.Printf("respawner: poskušam ubiti neodvisen proces %s (PID %d)", nodeID, sp.PID)
+
+			// signal za shutdown.
+			proc, err := os.FindProcess(sp.PID)
+			if err == nil && proc != nil {
+				if err := proc.Signal(syscall.SIGTERM); err != nil {
+					log.Printf("respawner: SIGTERM ni uspel za %s (PID %d): %v", nodeID, sp.PID, err)
+					_ = proc.Kill()
+				}
+			}
 		}
 	}
 }
@@ -276,7 +295,7 @@ func (r *Respawner) processRespawn(req RespawnRequest) {
 	log.Printf("respawner: uspešno zagnan node %s", req.NodeID)
 }
 
-// spawnProcess zažene proces serverja.
+// spawnProcess zažene proces serverja kot neodvisen proces.
 func (r *Respawner) spawnProcess(req RespawnRequest) error {
 	// Sestavi argumente za ukaz:
 	// ./server --naslov localhost:PORT --node-id NODEID --control CONTROL_ADDR --token-secret SECRET
@@ -292,15 +311,40 @@ func (r *Respawner) spawnProcess(req RespawnRequest) error {
 
 	cmd := exec.Command(serverBinaryPath, args...)
 
-	// Preusmeri stdout/stderr v naše log-e.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// nastavimo da požene neodvisen proces.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
+	// Ustvari log direktorij če ne obstaja.
+	if err := os.MkdirAll(nodeLogDir, 0755); err != nil {
+		return fmt.Errorf("ne morem ustvariti log direktorija: %w", err)
+	}
+
+	// Sam preusmeri out na logge    .
+	logPath := filepath.Join(nodeLogDir, fmt.Sprintf("%s.log", req.NodeID))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("ne morem odpreti log datoteke: %w", err)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	cmd.Stdin = nil
 
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("neuspel poskus procesa: %w", err)
 	}
 
 	pid := cmd.Process.Pid
+
+	// Po Release() proces postane "orphan" in ga prevzame init (PID 1).
+	if err := cmd.Process.Release(); err != nil {
+		log.Printf("respawner: opozorilo - Release() ni uspel za node %s: %v", req.NodeID, err)
+	}
+
+	logFile.Close()
 
 	r.mu.Lock()
 	r.spawned[req.NodeID] = &SpawnedProcess{
@@ -308,36 +352,20 @@ func (r *Respawner) spawnProcess(req RespawnRequest) error {
 		NodeID:    req.NodeID,
 		Port:      req.Port,
 		StartTime: time.Now(),
-		Cmd:       cmd,
+		Cmd:       nil,
 	}
 	r.portsInUse[req.Port] = req.NodeID
 	r.mu.Unlock()
 
-	log.Printf("respawner: zagnan node %s na portu %s (PID %d)", req.NodeID, req.Port, pid)
-
-	// Spremljaj proces v ozadju
-	go r.monitorProcess(req.NodeID, cmd)
+	log.Printf("respawner: zagnan node %s na portu %s (PID %d, log: %s)", req.NodeID, req.Port, pid, logPath)
 
 	return nil
 }
 
-// monitorProcess opazuje zagnan proces in logira ko se zaključi.
 func (r *Respawner) monitorProcess(nodeID string, cmd *exec.Cmd) {
-	err := cmd.Wait()
-
-	r.mu.Lock()
-	sp, exists := r.spawned[nodeID]
-	if exists && sp.Cmd == cmd {
-		delete(r.spawned, nodeID)
-		delete(r.portsInUse, sp.Port)
-	}
-	r.mu.Unlock()
-
-	if err != nil {
-		log.Printf("respawner: proces node-a %s se je zaključil z napako: %v", nodeID, err)
-	} else {
-		log.Printf("respawner: proces node-a %s se je uspešno zaključil", nodeID)
-	}
+	// NOTE: NE UPORABLJAJ! - data node procesl naj bo neodvisen in zato tega ne nucamo.
+	// Heartbeat timeout bo zaznal če node pade.
+	log.Printf("respawner: monitorProcess je deprecated - node %s je neodvisen proces", nodeID)
 }
 
 // Server je dedicated control unit. Sprejema Join/Heartbeat od node-ov, zazna odpoved
