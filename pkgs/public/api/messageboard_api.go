@@ -105,7 +105,7 @@ func (s *MessageBoardServer) requireTail() error {
 	}
 
 	if s.repl != nil && !s.repl.IsReady() {
-		return status.Error(codes.Unavailable, "Vozlišče se še sinhronizira (bootstrap) – poskusite ponovno čez trenutek.")
+		return status.Error(codes.Unavailable, "Vozlišče se še sinhronizira (bootstrap): poskusite ponovno čez trenutek.")
 	}
 	return nil
 }

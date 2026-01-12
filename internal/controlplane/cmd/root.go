@@ -50,13 +50,14 @@ func runRaftServer() error {
 	peerConfigs := parsePeersFlag(peers)
 
 	cfg := cp.RaftConfig{
-		NodeID:    nodeID,
-		RaftAddr:  raftAddr,
-		GRPCAddr:  addr,
-		DataDir:   dataDir,
-		Bootstrap: bootstrap,
-		Peers:     peerConfigs,
-		HBTimeout: hbTimeout,
+		NodeID:      nodeID,
+		RaftAddr:    raftAddr,
+		GRPCAddr:    addr,
+		DataDir:     dataDir,
+		Bootstrap:   bootstrap,
+		Peers:       peerConfigs,
+		HBTimeout:   hbTimeout,
+		TokenSecret: tokenSecret,
 	}
 
 	srv, err := cp.NewRaftServer(cfg)

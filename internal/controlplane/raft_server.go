@@ -32,13 +32,14 @@ type PeerConfig struct {
 
 // RaftConfig je konfiguracija za RaftServer.
 type RaftConfig struct {
-	NodeID    string
-	RaftAddr  string
-	GRPCAddr  string
-	DataDir   string
-	Bootstrap bool
-	Peers     []PeerConfig // seed peers (za auto-join / fallback)
-	HBTimeout time.Duration
+	NodeID      string
+	RaftAddr    string
+	GRPCAddr    string
+	DataDir     string
+	Bootstrap   bool
+	Peers       []PeerConfig // seed peers (za auto-join / fallback)
+	HBTimeout   time.Duration
+	TokenSecret string // za respawner
 }
 
 // RaftServer je control unit z Raft konsenzom.
@@ -69,25 +70,37 @@ type RaftServer struct {
 
 	// Za detekcijo menjave leaderja.
 	wasLeader bool
+
+	// Respawner za avtomatski ponovni zagon propadlih node-ov.
+	respawner   *Respawner
+	tokenSecret string
+
+	// cache: node_id -> port (primarno za respawning).
+	nodePorts map[string]string
 }
 
 func NewRaftServer(cfg RaftConfig) (*RaftServer, error) {
 	if cfg.HBTimeout <= 0 {
-		cfg.HBTimeout = 30 * time.Second
+		cfg.HBTimeout = 2 * time.Second // Isto kot legacy controlplane
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = "./data/" + cfg.NodeID
 	}
+	if cfg.TokenSecret == "" {
+		cfg.TokenSecret = "devsecret"
+	}
 
 	s := &RaftServer{
-		nodeID:    cfg.NodeID,
-		raftAddr:  cfg.RaftAddr,
-		grpcAddr:  cfg.GRPCAddr,
-		seedPeers: cfg.Peers,
-		lastHB:    make(map[string]time.Time),
-		hbTimeout: cfg.HBTimeout,
-		conns:     make(map[string]*grpc.ClientConn),
-		cps:       make(map[string]controlpb.ControlPlaneServiceClient),
+		nodeID:      cfg.NodeID,
+		raftAddr:    cfg.RaftAddr,
+		grpcAddr:    cfg.GRPCAddr,
+		seedPeers:   cfg.Peers,
+		lastHB:      make(map[string]time.Time),
+		hbTimeout:   cfg.HBTimeout,
+		conns:       make(map[string]*grpc.ClientConn),
+		cps:         make(map[string]controlpb.ControlPlaneServiceClient),
+		tokenSecret: cfg.TokenSecret,
+		nodePorts:   make(map[string]string),
 	}
 
 	if err := s.setupRaft(cfg); err != nil {
@@ -336,10 +349,21 @@ func (s *RaftServer) JoinChain(ctx context.Context, req *controlpb.JoinChainRequ
 		return nil, fmt.Errorf("raft apply error: %w", err)
 	}
 
+	// Shranjujemo porte za respawner.
+	port := extractPort(n.GetAddress())
+
 	// Ob pridružitvi šte... (leader only).
 	s.mu.Lock()
 	s.lastHB[n.GetNodeId()] = time.Now()
+	if port != "" {
+		s.nodePorts[n.GetNodeId()] = port
+	}
 	s.mu.Unlock()
+
+	// Registracija node-a pri respawnerju.
+	if s.respawner != nil && port != "" {
+		s.respawner.RegisterNode(n.GetNodeId(), port)
+	}
 
 	idx := s.fsm.NodeIndex(n.GetNodeId())
 	chain := s.fsm.GetChain()
@@ -478,13 +502,18 @@ func (s *RaftServer) GetRaftState(ctx context.Context, _ *controlpb.GetRaftState
 	}, nil
 }
 
-// ---- Chain neighbor updates and failure monitoring ----
-
-func (s *RaftServer) removeNodeFromChain(nodeID string) error {
+func (s *RaftServer) removeNodeFromChain(nodeID string) (string, error) {
 	if !s.IsLeader() {
-		return fmt.Errorf("nisem leader")
+		return "", fmt.Errorf("nisem leader")
 	}
-	return s.apply(Command{Type: CommandRemove, NodeID: nodeID}, 5*time.Second)
+
+	// Poberemo port preden odstranimo.
+	s.mu.Lock()
+	port := s.nodePorts[nodeID]
+	s.mu.Unlock()
+
+	err := s.apply(Command{Type: CommandRemove, NodeID: nodeID}, 5*time.Second)
+	return port, err
 }
 
 func (s *RaftServer) broadcastNeighbors() {
@@ -508,7 +537,7 @@ func (s *RaftServer) broadcastNeighbors() {
 }
 
 func (s *RaftServer) monitorFailures() {
-	t := time.NewTicker(1 * time.Second)
+	t := time.NewTicker(500 * time.Millisecond) // Isto kot legacy controlplane
 	defer t.Stop()
 	for range t.C {
 		if !s.IsLeader() {
@@ -536,7 +565,16 @@ func (s *RaftServer) monitorFailures() {
 
 		for _, id := range dead {
 			log.Printf("control: node %s timeout -> odstranim iz verige", id)
-			_ = s.removeNodeFromChain(id)
+			port, err := s.removeNodeFromChain(id)
+			if err != nil {
+				log.Printf("control: napaka pri odstranjevanju node %s: %v", id, err)
+				continue
+			}
+
+			// Proži respawn request.
+			if s.respawner != nil && port != "" {
+				s.respawner.RequestRespawn(id, port)
+			}
 		}
 		if len(dead) > 0 {
 			go s.broadcastNeighbors()
@@ -645,6 +683,10 @@ func (s *RaftServer) Serve() error {
 		return err
 	}
 
+	// Zaženemo respawner.
+	s.respawner = NewRespawner(s.grpcAddr, s.tokenSecret)
+	s.respawner.Start()
+
 	gs := grpc.NewServer()
 
 	// health
@@ -660,10 +702,18 @@ func (s *RaftServer) Serve() error {
 	go s.observeLeaderChanges()
 
 	log.Printf("Control unit %s zagnan (gRPC: %s, Raft: %s)", s.nodeID, s.grpcAddr, s.raftAddr)
+	log.Printf("control: respawner omogočen (workers=%d, queue=%d, max_attempts=%d)",
+		respawnWorkers, respawnQueueSize, maxRespawnAttempts)
+
 	return gs.Serve(lis)
 }
 
 func (s *RaftServer) Shutdown() error {
+	// Ustavimo respawner.
+	if s.respawner != nil {
+		s.respawner.Stop()
+	}
+
 	if s.raft != nil {
 		f := s.raft.Shutdown()
 		if err := f.Error(); err != nil {

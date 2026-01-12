@@ -22,7 +22,7 @@ func joinAndHeartbeat(ctrl *controlclient.Client, nodeID, nodeAddr string, repl 
 				applyJoinResponse(ctrl, nodeID, repl, mb, resp)
 				break
 			}
-			log.Printf("node %s: JoinChain failed: %v", nodeID, err)
+			log.Printf("node %s: JoinChain ni uspel: %v", nodeID, err)
 			time.Sleep(500 * time.Millisecond)
 		}
 
@@ -31,11 +31,11 @@ func joinAndHeartbeat(ctrl *controlclient.Client, nodeID, nodeAddr string, repl 
 		ok := true
 		for ok {
 			<-ticker.C
-			ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 			_, err := ctrl.Heartbeat(ctx, nodeID)
 			cancel()
 			if err != nil {
-				log.Printf("node %s: heartbeat failed: %v", nodeID, err)
+				log.Printf("node %s: ni uspel poslati heartbeat: %v", nodeID, err)
 				ok = false
 			}
 		}

@@ -182,6 +182,18 @@ func (c *Client) setPreferred(addr string) {
 
 var ErrNoControlAddrs = errors.New("ni podan noben control plane naslov")
 
+// invalidateConn zapre in odstrani povezavo za dani naslov iz cache-a.
+// Kličemo jo, ko RPC spodleti, da naslednji dial ustvari svežo povezavo.
+func (c *Client) invalidateConn(addr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cc, ok := c.conns[addr]; ok && cc != nil {
+		_ = cc.Close()
+	}
+	delete(c.conns, addr)
+	delete(c.clis, addr)
+}
+
 // call poskusi z več naslovi; ob uspehu vrne odgovor.
 func (c *Client) call(ctx context.Context, fn func(controlpb.ControlPlaneServiceClient) error) error {
 	c.mu.Lock()
@@ -200,6 +212,8 @@ func (c *Client) call(ctx context.Context, fn func(controlpb.ControlPlaneService
 		}
 		if err := fn(cli); err != nil {
 			lastErr = err
+			// Invalidiraj povezavo, da se naslednjič ustvari sveža.
+			c.invalidateConn(addr)
 			continue
 		}
 		// Uspeh -> ta addr postane preferiran.
