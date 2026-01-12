@@ -103,7 +103,7 @@ func main() {
 	root.AddItem(rightFlex, 0, 1, false)
 
 	// Povezava na strežnik (Control Plane).
-	client, err := odjemalec.Povezi("localhost:9876")
+	client, err := odjemalec.Povezi("localhost:9999")
 	if err != nil {
 		// Če ne uspe, poskusimo še direkten dostop ali panic.
 		panic(fmt.Errorf("povezava ni uspela: %v", err))
@@ -397,9 +397,32 @@ func promptUsername(
 	state *AppState,
 	done func(),
 ) {
+	asciiArt := `
+ ____                                    _             _           
+|  _ \ __ _ ___ _ __  _ __ __ ___   ___ (_) __ _ _ __ (_) ___ __ _ 
+| |_) / _' |_  / '_ \| '__/ _' \ \ / /  | |/ _' | '_ \| |/ __/ _' |
+|  _ < (_| |/ /| |_) | | | (_| |\ V / __| | (_| | | | | | (_| (_| |
+|_| \_\__,_/___|  __/|_|  \__,_| \_/ \____|\__,_|_| |_|_|\___\__,_|
+                  |_|                                                     
+`
+
+	// Naslov
+	titleView := tview.NewTextView()
+	titleView.SetText(asciiArt)
+	titleView.SetTextAlign(tview.AlignCenter)
+	titleView.SetTextColor(tcell.ColorAqua)
+	titleView.SetDynamicColors(true)
+
 	input := tview.NewInputField()
 	input.SetLabel("Uporabniško ime: ")
-	input.SetFieldWidth(20)
+	input.SetFieldWidth(30)
+	// input.SetFieldBackgroundColor(tcell.ColorDarkSlateGray)
+
+	// TextView za prikaz napak
+	errorView := tview.NewTextView()
+	errorView.SetTextColor(tcell.ColorRed)
+	errorView.SetTextAlign(tview.AlignCenter)
+	errorView.SetDynamicColors(true)
 
 	form := tview.NewForm()
 	form.AddFormItem(input)
@@ -411,7 +434,8 @@ func promptUsername(
 		// Ustvarimo uporabnika, da dobimo ID.
 		user, err := client.CreateUser(context.Background(), name)
 		if err != nil {
-			panic(err)
+			errorView.SetText(fmt.Sprintf("Napaka: %v", err))
+			return
 		}
 		state.UserID = user.Id
 		state.UserName = user.Name
@@ -419,6 +443,24 @@ func promptUsername(
 	})
 
 	form.SetBorder(true)
-	form.SetTitle("Prijava")
-	app.SetRoot(form, true)
+	form.SetTitle(" Prijava ")
+	form.SetBorderColor(tcell.ColorAqua)
+	form.SetTitleColor(tcell.ColorAqua)
+
+	// Flex layout za centriranje. Malo experimentalno določen.
+	flex := tview.NewFlex().SetDirection(tview.FlexRow)
+	flex.AddItem(nil, 0, 1, false)
+	flex.AddItem(titleView, 8, 0, false)
+	flex.AddItem(nil, 1, 0, false)
+	flex.AddItem(form, 7, 0, true)
+	flex.AddItem(errorView, 1, 0, false)
+	flex.AddItem(nil, 0, 1, false)
+
+	// Horizontalno centriranje.
+	centerFlex := tview.NewFlex()
+	centerFlex.AddItem(nil, 0, 1, false)
+	centerFlex.AddItem(flex, 80, 0, true)
+	centerFlex.AddItem(nil, 0, 1, false)
+
+	app.SetRoot(centerFlex, true)
 }

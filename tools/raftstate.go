@@ -11,6 +11,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// skripta, da lahko preverimo, če dela pravilno !
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("usage: go run tools/raftstate.go host:port")

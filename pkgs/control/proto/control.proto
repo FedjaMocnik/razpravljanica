@@ -29,6 +29,9 @@ service ControlPlaneService {
   rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
   rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
   rpc GetRaftState(GetRaftStateRequest) returns (GetRaftStateResponse);
+
+  // Obvesti glede spremembe vodje.
+  rpc NotifyLeaderChange(NotifyLeaderChangeRequest) returns (NotifyLeaderChangeResponse);
 }
 
 
@@ -117,4 +120,15 @@ message GetChainResponse {
   repeated NodeInfo chain = 1;
   NodeInfo head = 2;
   NodeInfo tail = 3;
+}
+
+// Notifikacija data node-om, da se je leader spremenil (I am the leader now! - captiain Philips)
+message NotifyLeaderChangeRequest {
+  string leader_id = 1;
+  string leader_grpc_addr = 2;  // gRPC naslov novega leaderja
+  repeated string all_control_addrs = 3;  // Vsi control unit naslovi za failover
+}
+
+message NotifyLeaderChangeResponse {
+  bool ok = 1;
 }

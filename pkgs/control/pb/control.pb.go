@@ -854,6 +854,111 @@ func (x *GetChainResponse) GetTail() *NodeInfo {
 	return nil
 }
 
+// Notifikacija data node-om, da se je leader spremenil
+type NotifyLeaderChangeRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	LeaderId        string                 `protobuf:"bytes,1,opt,name=leader_id,json=leaderId,proto3" json:"leader_id,omitempty"`
+	LeaderGrpcAddr  string                 `protobuf:"bytes,2,opt,name=leader_grpc_addr,json=leaderGrpcAddr,proto3" json:"leader_grpc_addr,omitempty"`    // gRPC naslov novega leaderja
+	AllControlAddrs []string               `protobuf:"bytes,3,rep,name=all_control_addrs,json=allControlAddrs,proto3" json:"all_control_addrs,omitempty"` // Vsi control unit naslovi za failover
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *NotifyLeaderChangeRequest) Reset() {
+	*x = NotifyLeaderChangeRequest{}
+	mi := &file_control_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotifyLeaderChangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotifyLeaderChangeRequest) ProtoMessage() {}
+
+func (x *NotifyLeaderChangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotifyLeaderChangeRequest.ProtoReflect.Descriptor instead.
+func (*NotifyLeaderChangeRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *NotifyLeaderChangeRequest) GetLeaderId() string {
+	if x != nil {
+		return x.LeaderId
+	}
+	return ""
+}
+
+func (x *NotifyLeaderChangeRequest) GetLeaderGrpcAddr() string {
+	if x != nil {
+		return x.LeaderGrpcAddr
+	}
+	return ""
+}
+
+func (x *NotifyLeaderChangeRequest) GetAllControlAddrs() []string {
+	if x != nil {
+		return x.AllControlAddrs
+	}
+	return nil
+}
+
+type NotifyLeaderChangeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NotifyLeaderChangeResponse) Reset() {
+	*x = NotifyLeaderChangeResponse{}
+	mi := &file_control_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotifyLeaderChangeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotifyLeaderChangeResponse) ProtoMessage() {}
+
+func (x *NotifyLeaderChangeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotifyLeaderChangeResponse.ProtoReflect.Descriptor instead.
+func (*NotifyLeaderChangeResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *NotifyLeaderChangeResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 var File_control_proto protoreflect.FileDescriptor
 
 const file_control_proto_rawDesc = "" +
@@ -908,7 +1013,13 @@ const file_control_proto_rawDesc = "" +
 	"\x10GetChainResponse\x12,\n" +
 	"\x05chain\x18\x01 \x03(\v2\x16.controlplane.NodeInfoR\x05chain\x12*\n" +
 	"\x04head\x18\x02 \x01(\v2\x16.controlplane.NodeInfoR\x04head\x12*\n" +
-	"\x04tail\x18\x03 \x01(\v2\x16.controlplane.NodeInfoR\x04tail2\xcc\x04\n" +
+	"\x04tail\x18\x03 \x01(\v2\x16.controlplane.NodeInfoR\x04tail\"\x8e\x01\n" +
+	"\x19NotifyLeaderChangeRequest\x12\x1b\n" +
+	"\tleader_id\x18\x01 \x01(\tR\bleaderId\x12(\n" +
+	"\x10leader_grpc_addr\x18\x02 \x01(\tR\x0eleaderGrpcAddr\x12*\n" +
+	"\x11all_control_addrs\x18\x03 \x03(\tR\x0fallControlAddrs\",\n" +
+	"\x1aNotifyLeaderChangeResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xb5\x05\n" +
 	"\x13ControlPlaneService\x12L\n" +
 	"\tHeartbeat\x12\x1e.controlplane.HeartbeatRequest\x1a\x1f.controlplane.HeartbeatResponse\x12L\n" +
 	"\tJoinChain\x12\x1e.controlplane.JoinChainRequest\x1a\x1f.controlplane.JoinChainResponse\x12^\n" +
@@ -917,7 +1028,8 @@ const file_control_proto_rawDesc = "" +
 	"\aAddPeer\x12\x1c.controlplane.AddPeerRequest\x1a\x1d.controlplane.AddPeerResponse\x12O\n" +
 	"\n" +
 	"RemovePeer\x12\x1f.controlplane.RemovePeerRequest\x1a .controlplane.RemovePeerResponse\x12U\n" +
-	"\fGetRaftState\x12!.controlplane.GetRaftStateRequest\x1a\".controlplane.GetRaftStateResponseB8Z6github.com/FedjaMocnik/razpravljalnica/pkgs/control/pbb\x06proto3"
+	"\fGetRaftState\x12!.controlplane.GetRaftStateRequest\x1a\".controlplane.GetRaftStateResponse\x12g\n" +
+	"\x12NotifyLeaderChange\x12'.controlplane.NotifyLeaderChangeRequest\x1a(.controlplane.NotifyLeaderChangeResponseB8Z6github.com/FedjaMocnik/razpravljalnica/pkgs/control/pbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -931,24 +1043,26 @@ func file_control_proto_rawDescGZIP() []byte {
 	return file_control_proto_rawDescData
 }
 
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_control_proto_goTypes = []any{
-	(*NodeInfo)(nil),                // 0: controlplane.NodeInfo
-	(*HeartbeatRequest)(nil),        // 1: controlplane.HeartbeatRequest
-	(*HeartbeatResponse)(nil),       // 2: controlplane.HeartbeatResponse
-	(*AddPeerRequest)(nil),          // 3: controlplane.AddPeerRequest
-	(*AddPeerResponse)(nil),         // 4: controlplane.AddPeerResponse
-	(*RemovePeerRequest)(nil),       // 5: controlplane.RemovePeerRequest
-	(*RemovePeerResponse)(nil),      // 6: controlplane.RemovePeerResponse
-	(*GetRaftStateRequest)(nil),     // 7: controlplane.GetRaftStateRequest
-	(*GetRaftStateResponse)(nil),    // 8: controlplane.GetRaftStateResponse
-	(*RaftPeer)(nil),                // 9: controlplane.RaftPeer
-	(*JoinChainRequest)(nil),        // 10: controlplane.JoinChainRequest
-	(*JoinChainResponse)(nil),       // 11: controlplane.JoinChainResponse
-	(*UpdateNeighborsRequest)(nil),  // 12: controlplane.UpdateNeighborsRequest
-	(*UpdateNeighborsResponse)(nil), // 13: controlplane.UpdateNeighborsResponse
-	(*GetChainRequest)(nil),         // 14: controlplane.GetChainRequest
-	(*GetChainResponse)(nil),        // 15: controlplane.GetChainResponse
+	(*NodeInfo)(nil),                   // 0: controlplane.NodeInfo
+	(*HeartbeatRequest)(nil),           // 1: controlplane.HeartbeatRequest
+	(*HeartbeatResponse)(nil),          // 2: controlplane.HeartbeatResponse
+	(*AddPeerRequest)(nil),             // 3: controlplane.AddPeerRequest
+	(*AddPeerResponse)(nil),            // 4: controlplane.AddPeerResponse
+	(*RemovePeerRequest)(nil),          // 5: controlplane.RemovePeerRequest
+	(*RemovePeerResponse)(nil),         // 6: controlplane.RemovePeerResponse
+	(*GetRaftStateRequest)(nil),        // 7: controlplane.GetRaftStateRequest
+	(*GetRaftStateResponse)(nil),       // 8: controlplane.GetRaftStateResponse
+	(*RaftPeer)(nil),                   // 9: controlplane.RaftPeer
+	(*JoinChainRequest)(nil),           // 10: controlplane.JoinChainRequest
+	(*JoinChainResponse)(nil),          // 11: controlplane.JoinChainResponse
+	(*UpdateNeighborsRequest)(nil),     // 12: controlplane.UpdateNeighborsRequest
+	(*UpdateNeighborsResponse)(nil),    // 13: controlplane.UpdateNeighborsResponse
+	(*GetChainRequest)(nil),            // 14: controlplane.GetChainRequest
+	(*GetChainResponse)(nil),           // 15: controlplane.GetChainResponse
+	(*NotifyLeaderChangeRequest)(nil),  // 16: controlplane.NotifyLeaderChangeRequest
+	(*NotifyLeaderChangeResponse)(nil), // 17: controlplane.NotifyLeaderChangeResponse
 }
 var file_control_proto_depIdxs = []int32{
 	9,  // 0: controlplane.GetRaftStateResponse.peers:type_name -> controlplane.RaftPeer
@@ -969,15 +1083,17 @@ var file_control_proto_depIdxs = []int32{
 	3,  // 15: controlplane.ControlPlaneService.AddPeer:input_type -> controlplane.AddPeerRequest
 	5,  // 16: controlplane.ControlPlaneService.RemovePeer:input_type -> controlplane.RemovePeerRequest
 	7,  // 17: controlplane.ControlPlaneService.GetRaftState:input_type -> controlplane.GetRaftStateRequest
-	2,  // 18: controlplane.ControlPlaneService.Heartbeat:output_type -> controlplane.HeartbeatResponse
-	11, // 19: controlplane.ControlPlaneService.JoinChain:output_type -> controlplane.JoinChainResponse
-	13, // 20: controlplane.ControlPlaneService.UpdateNeighbors:output_type -> controlplane.UpdateNeighborsResponse
-	15, // 21: controlplane.ControlPlaneService.GetChain:output_type -> controlplane.GetChainResponse
-	4,  // 22: controlplane.ControlPlaneService.AddPeer:output_type -> controlplane.AddPeerResponse
-	6,  // 23: controlplane.ControlPlaneService.RemovePeer:output_type -> controlplane.RemovePeerResponse
-	8,  // 24: controlplane.ControlPlaneService.GetRaftState:output_type -> controlplane.GetRaftStateResponse
-	18, // [18:25] is the sub-list for method output_type
-	11, // [11:18] is the sub-list for method input_type
+	16, // 18: controlplane.ControlPlaneService.NotifyLeaderChange:input_type -> controlplane.NotifyLeaderChangeRequest
+	2,  // 19: controlplane.ControlPlaneService.Heartbeat:output_type -> controlplane.HeartbeatResponse
+	11, // 20: controlplane.ControlPlaneService.JoinChain:output_type -> controlplane.JoinChainResponse
+	13, // 21: controlplane.ControlPlaneService.UpdateNeighbors:output_type -> controlplane.UpdateNeighborsResponse
+	15, // 22: controlplane.ControlPlaneService.GetChain:output_type -> controlplane.GetChainResponse
+	4,  // 23: controlplane.ControlPlaneService.AddPeer:output_type -> controlplane.AddPeerResponse
+	6,  // 24: controlplane.ControlPlaneService.RemovePeer:output_type -> controlplane.RemovePeerResponse
+	8,  // 25: controlplane.ControlPlaneService.GetRaftState:output_type -> controlplane.GetRaftStateResponse
+	17, // 26: controlplane.ControlPlaneService.NotifyLeaderChange:output_type -> controlplane.NotifyLeaderChangeResponse
+	19, // [19:27] is the sub-list for method output_type
+	11, // [11:19] is the sub-list for method input_type
 	11, // [11:11] is the sub-list for extension type_name
 	11, // [11:11] is the sub-list for extension extendee
 	0,  // [0:11] is the sub-list for field type_name
@@ -994,7 +1110,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

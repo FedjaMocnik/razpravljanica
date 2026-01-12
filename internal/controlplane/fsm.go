@@ -87,7 +87,7 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 	}
 }
 
-func (f *FSM) applyJoin(nodeID, addr string) interface{} {
+func (f *FSM) applyJoin(nodeID, addr string) any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -101,7 +101,7 @@ func (f *FSM) applyJoin(nodeID, addr string) interface{} {
 	return nil
 }
 
-func (f *FSM) applyRemove(nodeID string) interface{} {
+func (f *FSM) applyRemove(nodeID string) any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, n := range f.chain {
@@ -113,7 +113,7 @@ func (f *FSM) applyRemove(nodeID string) interface{} {
 	return nil
 }
 
-func (f *FSM) applyUpdateNode(nodeID, addr string) interface{} {
+func (f *FSM) applyUpdateNode(nodeID, addr string) any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, n := range f.chain {
@@ -125,7 +125,7 @@ func (f *FSM) applyUpdateNode(nodeID, addr string) interface{} {
 	return nil
 }
 
-func (f *FSM) applyUpsertPeer(nodeID, raftAddr, grpcAddr string) interface{} {
+func (f *FSM) applyUpsertPeer(nodeID, raftAddr, grpcAddr string) any {
 	if nodeID == "" {
 		return nil
 	}
@@ -138,7 +138,7 @@ func (f *FSM) applyUpsertPeer(nodeID, raftAddr, grpcAddr string) interface{} {
 	return nil
 }
 
-func (f *FSM) applyRemovePeer(nodeID string) interface{} {
+func (f *FSM) applyRemovePeer(nodeID string) any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.peers, nodeID)

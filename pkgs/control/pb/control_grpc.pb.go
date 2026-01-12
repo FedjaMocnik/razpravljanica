@@ -19,13 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ControlPlaneService_Heartbeat_FullMethodName       = "/controlplane.ControlPlaneService/Heartbeat"
-	ControlPlaneService_JoinChain_FullMethodName       = "/controlplane.ControlPlaneService/JoinChain"
-	ControlPlaneService_UpdateNeighbors_FullMethodName = "/controlplane.ControlPlaneService/UpdateNeighbors"
-	ControlPlaneService_GetChain_FullMethodName        = "/controlplane.ControlPlaneService/GetChain"
-	ControlPlaneService_AddPeer_FullMethodName         = "/controlplane.ControlPlaneService/AddPeer"
-	ControlPlaneService_RemovePeer_FullMethodName      = "/controlplane.ControlPlaneService/RemovePeer"
-	ControlPlaneService_GetRaftState_FullMethodName    = "/controlplane.ControlPlaneService/GetRaftState"
+	ControlPlaneService_Heartbeat_FullMethodName          = "/controlplane.ControlPlaneService/Heartbeat"
+	ControlPlaneService_JoinChain_FullMethodName          = "/controlplane.ControlPlaneService/JoinChain"
+	ControlPlaneService_UpdateNeighbors_FullMethodName    = "/controlplane.ControlPlaneService/UpdateNeighbors"
+	ControlPlaneService_GetChain_FullMethodName           = "/controlplane.ControlPlaneService/GetChain"
+	ControlPlaneService_AddPeer_FullMethodName            = "/controlplane.ControlPlaneService/AddPeer"
+	ControlPlaneService_RemovePeer_FullMethodName         = "/controlplane.ControlPlaneService/RemovePeer"
+	ControlPlaneService_GetRaftState_FullMethodName       = "/controlplane.ControlPlaneService/GetRaftState"
+	ControlPlaneService_NotifyLeaderChange_FullMethodName = "/controlplane.ControlPlaneService/NotifyLeaderChange"
 )
 
 // ControlPlaneServiceClient is the client API for ControlPlaneService service.
@@ -44,6 +45,8 @@ type ControlPlaneServiceClient interface {
 	AddPeer(ctx context.Context, in *AddPeerRequest, opts ...grpc.CallOption) (*AddPeerResponse, error)
 	RemovePeer(ctx context.Context, in *RemovePeerRequest, opts ...grpc.CallOption) (*RemovePeerResponse, error)
 	GetRaftState(ctx context.Context, in *GetRaftStateRequest, opts ...grpc.CallOption) (*GetRaftStateResponse, error)
+	// Notify data nodes about leadership change (called by new leader -> data nodes)
+	NotifyLeaderChange(ctx context.Context, in *NotifyLeaderChangeRequest, opts ...grpc.CallOption) (*NotifyLeaderChangeResponse, error)
 }
 
 type controlPlaneServiceClient struct {
@@ -124,6 +127,16 @@ func (c *controlPlaneServiceClient) GetRaftState(ctx context.Context, in *GetRaf
 	return out, nil
 }
 
+func (c *controlPlaneServiceClient) NotifyLeaderChange(ctx context.Context, in *NotifyLeaderChangeRequest, opts ...grpc.CallOption) (*NotifyLeaderChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NotifyLeaderChangeResponse)
+	err := c.cc.Invoke(ctx, ControlPlaneService_NotifyLeaderChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlPlaneServiceServer is the server API for ControlPlaneService service.
 // All implementations must embed UnimplementedControlPlaneServiceServer
 // for forward compatibility.
@@ -140,6 +153,8 @@ type ControlPlaneServiceServer interface {
 	AddPeer(context.Context, *AddPeerRequest) (*AddPeerResponse, error)
 	RemovePeer(context.Context, *RemovePeerRequest) (*RemovePeerResponse, error)
 	GetRaftState(context.Context, *GetRaftStateRequest) (*GetRaftStateResponse, error)
+	// Notify data nodes about leadership change (called by new leader -> data nodes)
+	NotifyLeaderChange(context.Context, *NotifyLeaderChangeRequest) (*NotifyLeaderChangeResponse, error)
 	mustEmbedUnimplementedControlPlaneServiceServer()
 }
 
@@ -170,6 +185,9 @@ func (UnimplementedControlPlaneServiceServer) RemovePeer(context.Context, *Remov
 }
 func (UnimplementedControlPlaneServiceServer) GetRaftState(context.Context, *GetRaftStateRequest) (*GetRaftStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRaftState not implemented")
+}
+func (UnimplementedControlPlaneServiceServer) NotifyLeaderChange(context.Context, *NotifyLeaderChangeRequest) (*NotifyLeaderChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method NotifyLeaderChange not implemented")
 }
 func (UnimplementedControlPlaneServiceServer) mustEmbedUnimplementedControlPlaneServiceServer() {}
 func (UnimplementedControlPlaneServiceServer) testEmbeddedByValue()                             {}
@@ -318,6 +336,24 @@ func _ControlPlaneService_GetRaftState_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlPlaneService_NotifyLeaderChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NotifyLeaderChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlPlaneServiceServer).NotifyLeaderChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlPlaneService_NotifyLeaderChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlPlaneServiceServer).NotifyLeaderChange(ctx, req.(*NotifyLeaderChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlPlaneService_ServiceDesc is the grpc.ServiceDesc for ControlPlaneService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -352,6 +388,10 @@ var ControlPlaneService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRaftState",
 			Handler:    _ControlPlaneService_GetRaftState_Handler,
+		},
+		{
+			MethodName: "NotifyLeaderChange",
+			Handler:    _ControlPlaneService_NotifyLeaderChange_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

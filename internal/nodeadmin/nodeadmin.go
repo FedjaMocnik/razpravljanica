@@ -78,3 +78,21 @@ func (s *ControlNodeServer) fetchChain() []*publicpb.NodeInfo {
 	}
 	return chain
 }
+
+// NotifyLeaderChange se kliče s strani novega leaderja, da data node posodobi svoje control naslove.
+// Torej če trenutni leader pade, pade tudi povezava do odjemalcev, torej to požene novi leader CU
+// in pove odjemalcem: "I am the Leader now."
+func (s *ControlNodeServer) NotifyLeaderChange(ctx context.Context, req *controlpb.NotifyLeaderChangeRequest) (*controlpb.NotifyLeaderChangeResponse, error) {
+	if s.control == nil {
+		return &controlpb.NotifyLeaderChangeResponse{Ok: false}, nil
+	}
+	leaderAddr := req.GetLeaderGrpcAddr()
+	allAddrs := req.GetAllControlAddrs()
+
+	log.Printf("node %s: prejel NotifyLeaderChange, novi leader=%s (vseh %d naslovov)", s.nodeID, leaderAddr, len(allAddrs))
+
+	// Posodobi controlclient z novimi naslovi.
+	s.control.SetControlAddrs(leaderAddr, allAddrs)
+
+	return &controlpb.NotifyLeaderChangeResponse{Ok: true}, nil
+}

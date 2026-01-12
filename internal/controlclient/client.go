@@ -70,6 +70,58 @@ func (c *Client) Close() {
 	c.clis = make(map[string]controlpb.ControlPlaneServiceClient)
 }
 
+// SetControlAddrs posodobi seznam control naslovov in nastavi preferiranega.
+// Uporablja se ob menjavi leaderja, ko novi leader pošlje NotifyLeaderChange.
+func (c *Client) SetControlAddrs(preferred string, all []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Zapri stare povezave, ki niso v novem seznamu.
+	//
+	newSet := make(map[string]bool)
+	for _, a := range all {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			newSet[a] = true
+		}
+	}
+	for addr, cc := range c.conns {
+		if !newSet[addr] {
+			_ = cc.Close()
+			delete(c.conns, addr)
+			delete(c.clis, addr)
+		}
+	}
+
+	// dedupliciramo
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(all))
+	for _, a := range all {
+		a = strings.TrimSpace(a)
+		if a == "" || seen[a] {
+			continue
+		}
+		seen[a] = true
+		uniq = append(uniq, a)
+	}
+	c.addrs = uniq
+
+	// Nastavi preferred kot trenutni indeks.
+	preferred = strings.TrimSpace(preferred)
+	c.idx = 0
+	for i, a := range c.addrs {
+		if a == preferred {
+			c.idx = i
+			break
+		}
+	}
+	// Če preferred ni v seznamu, ga dodaj na začetek.
+	if preferred != "" && !seen[preferred] {
+		c.addrs = append([]string{preferred}, c.addrs...)
+		c.idx = 0
+	}
+}
+
 func (c *Client) dial(addr string) (controlpb.ControlPlaneServiceClient, error) {
 	c.mu.Lock()
 	if cli := c.clis[addr]; cli != nil {

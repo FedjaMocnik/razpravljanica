@@ -66,6 +66,9 @@ type RaftServer struct {
 	// grpc clients (za UpdateNeighbors in forward).
 	conns map[string]*grpc.ClientConn
 	cps   map[string]controlpb.ControlPlaneServiceClient
+
+	// Za detekcijo menjave leaderja.
+	wasLeader bool
 }
 
 func NewRaftServer(cfg RaftConfig) (*RaftServer, error) {
@@ -541,6 +544,100 @@ func (s *RaftServer) monitorFailures() {
 	}
 }
 
+// observeLeaderChanges preverja, ali smo postali leader in obvesti data node-e.
+func (s *RaftServer) observeLeaderChanges() {
+	t := time.NewTicker(200 * time.Millisecond)
+	defer t.Stop()
+	for range t.C {
+		isLeader := s.IsLeader()
+
+		s.mu.Lock()
+		wasLeader := s.wasLeader
+		if isLeader && !wasLeader {
+			// Pravkar smo postali leader!
+			s.wasLeader = true
+			s.mu.Unlock()
+
+			log.Printf("control %s: postal sem leader, obveščam data node-e", s.nodeID)
+			go s.broadcastLeaderChange()
+		} else {
+			s.wasLeader = isLeader
+			s.mu.Unlock()
+		}
+	}
+}
+
+// broadcastLeaderChange obvesti vse data node-e v verigi, da smo novi leader.
+func (s *RaftServer) broadcastLeaderChange() {
+	// Počakaj, da se raft stabilizira.
+	time.Sleep(300 * time.Millisecond)
+
+	chain := s.fsm.GetChain()
+	if len(chain) == 0 {
+		return
+	}
+
+	// Zberemo vse control unit naslove (za failover).
+	allAddrs := s.getAllControlAddrs()
+
+	for _, node := range chain {
+		if node == nil || node.GetAddress() == "" {
+			continue
+		}
+		cli, err := s.dial(node.GetAddress())
+		if err != nil {
+			log.Printf("control %s: ne morem obvestiti %s o spremembi leaderja: %v", s.nodeID, node.GetNodeId(), err)
+			continue
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+		_, err = cli.NotifyLeaderChange(cctx, &controlpb.NotifyLeaderChangeRequest{
+			LeaderId:        s.nodeID,
+			LeaderGrpcAddr:  s.grpcAddr,
+			AllControlAddrs: allAddrs,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("control %s: NotifyLeaderChange za %s neuspešen: %v", s.nodeID, node.GetNodeId(), err)
+		} else {
+			log.Printf("control %s: obvestil %s o spremembi leaderja", s.nodeID, node.GetNodeId())
+		}
+	}
+
+	// Po obvestilu še pošljemo neighbor update, da se data node-i resinkajo.
+	go s.broadcastNeighbors()
+}
+
+// getAllControlAddrs vrne vse gRPC naslove control unit-ov (peers + self).
+func (s *RaftServer) getAllControlAddrs() []string {
+	addrs := make([]string, 0, len(s.seedPeers)+1)
+	// Najprej dodamo sebe (leader).
+	addrs = append(addrs, s.grpcAddr)
+
+	// Dodamo vse peer-e iz Raft konfiguracije.
+	confF := s.raft.GetConfiguration()
+	if err := confF.Error(); err == nil {
+		for _, srv := range confF.Configuration().Servers {
+			id := string(srv.ID)
+			if id == s.nodeID {
+				continue
+			}
+			// Poiščemo gRPC naslov za ta peer.
+			if p, ok := s.fsm.GetPeer(id); ok && p.GRPCAddr != "" {
+				addrs = append(addrs, p.GRPCAddr)
+			} else {
+				// Fallback na seedPeers.
+				for _, sp := range s.seedPeers {
+					if sp.NodeID == id && sp.GRPCAddr != "" {
+						addrs = append(addrs, sp.GRPCAddr)
+						break
+					}
+				}
+			}
+		}
+	}
+	return addrs
+}
+
 // Serve zažene gRPC strežnik.
 func (s *RaftServer) Serve() error {
 	lis, err := net.Listen("tcp", s.grpcAddr)
@@ -560,6 +657,7 @@ func (s *RaftServer) Serve() error {
 	reflection.Register(gs)
 
 	go s.monitorFailures()
+	go s.observeLeaderChanges()
 
 	log.Printf("Control unit %s zagnan (gRPC: %s, Raft: %s)", s.nodeID, s.grpcAddr, s.raftAddr)
 	return gs.Serve(lis)
