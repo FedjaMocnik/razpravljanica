@@ -65,7 +65,7 @@ func NewFSM() *FSM {
 	return &FSM{chain: make([]*NodeState, 0), peers: make(map[string]*PeerState)}
 }
 
-func (f *FSM) Apply(l *raft.Log) interface{} {
+func (f *FSM) Apply(l *raft.Log) any {
 	var cmd Command
 	if err := json.Unmarshal(l.Data, &cmd); err != nil {
 		return fmt.Errorf("napaka pri unmarshal: %w", err)

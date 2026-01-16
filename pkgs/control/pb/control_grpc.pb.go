@@ -8,6 +8,7 @@ package pb
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -45,7 +46,7 @@ type ControlPlaneServiceClient interface {
 	AddPeer(ctx context.Context, in *AddPeerRequest, opts ...grpc.CallOption) (*AddPeerResponse, error)
 	RemovePeer(ctx context.Context, in *RemovePeerRequest, opts ...grpc.CallOption) (*RemovePeerResponse, error)
 	GetRaftState(ctx context.Context, in *GetRaftStateRequest, opts ...grpc.CallOption) (*GetRaftStateResponse, error)
-	// Notify data nodes about leadership change (called by new leader -> data nodes)
+
 	NotifyLeaderChange(ctx context.Context, in *NotifyLeaderChangeRequest, opts ...grpc.CallOption) (*NotifyLeaderChangeResponse, error)
 }
 

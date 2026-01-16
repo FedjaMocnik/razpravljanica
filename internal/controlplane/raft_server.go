@@ -119,7 +119,6 @@ func (s *RaftServer) setupRaft(cfg RaftConfig) error {
 	rc := raft.DefaultConfig()
 	rc.LocalID = raft.ServerID(cfg.NodeID)
 
-	// Hitrejši failover (razumno za laboratorijsko okolje).
 	rc.HeartbeatTimeout = 600 * time.Millisecond
 	rc.ElectionTimeout = 600 * time.Millisecond
 	rc.LeaderLeaseTimeout = 300 * time.Millisecond

@@ -312,3 +312,153 @@ func TestWaitForCommit(t *testing.T) {
 		t.Error("ReplicateUser je potekel (timeout)")
 	}
 }
+
+// TestMiddleNodeRollbackFromState preveri, da se ob rekonfiguraciji ne-commitani vpisi
+// pravilno odstranijo iz lokalnega stanja (state), ne samo iz loga.
+func TestMiddleNodeRollbackFromState(t *testing.T) {
+	// topo z 3mi nodi.
+	l1, _ := net.Listen("tcp", "localhost:0")
+	l2, _ := net.Listen("tcp", "localhost:0")
+	l3, _ := net.Listen("tcp", "localhost:0")
+	a1, a2, a3 := l1.Addr().String(), l2.Addr().String(), l3.Addr().String()
+
+	st1 := storage.NewState()
+	st2 := storage.NewState()
+	st3 := storage.NewState()
+
+	mgr1 := NewManager(Config{NodeID: "head", Address: a1, NextAddr: a2, IsHead: true}, st1)
+	mgr2 := NewManager(Config{NodeID: "middle", Address: a2, PrevAddr: a1, NextAddr: a3}, st2)
+	mgr3 := NewManager(Config{NodeID: "tail", Address: a3, PrevAddr: a2, IsTail: true}, st3)
+
+	mgr1.markReady()
+	mgr2.markReady()
+	mgr3.markReady()
+
+	s1 := grpc.NewServer()
+	privatepb.RegisterReplicationServiceServer(s1, mgr1)
+	go s1.Serve(l1)
+
+	s2 := grpc.NewServer()
+	privatepb.RegisterReplicationServiceServer(s2, mgr2)
+	go s2.Serve(l2)
+
+	s3 := grpc.NewServer()
+	privatepb.RegisterReplicationServiceServer(s3, mgr3)
+	go s3.Serve(l3)
+
+	defer func() {
+		s1.Stop()
+		s2.Stop()
+		mgr1.Close()
+		mgr2.Close()
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	t.Log("Repliciram prvi vpis (bo committed)...")
+	if err := mgr1.ReplicateTopic(ctx, &publicpb.Topic{Id: 1, Name: "CommittedTema"}); err != nil {
+		t.Fatalf("Replikacija commitane teme ni uspela: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if topic := st2.GetTopic(1); topic == nil {
+		t.Fatal("Commitana tema manjka v Sredini")
+	}
+	if topic := st3.GetTopic(1); topic == nil {
+		t.Fatal("Commitana tema manjka v Repu")
+	}
+	t.Log("Prvi vpis je uspešno commitiran v follower vozliščih")
+
+	t.Log("Ustavljam Rep (ne bo commitan srednji)...")
+	s3.Stop()
+	mgr3.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Ustvarimo entry ročno (kot bi ga HEAD poslal)
+	uncommittedUser := &publicpb.User{Id: 999, Name: "NeKommitan"}
+	payload, _ := encodePayload(uncommittedUser)
+	entry := &privatepb.LogEntry{EntryId: 2, Payload: payload}
+
+	// pošljemo fwd na sredino (rep mrtev!)
+	ctxShort, cancelShort := context.WithTimeout(ctx, 500*time.Millisecond)
+	_, err := mgr2.Forward(ctxShort, &privatepb.ForwardRequest{Entry: entry})
+	cancelShort()
+
+	if err == nil {
+		t.Log("Opozorilo: Forward je uspel (slaba!!!)")
+	} else {
+		t.Logf("Forward je pričakovano spodletel: %v", err)
+	}
+
+	// prebereo če je apliciran na srednjem.
+	mgr2.mu.Lock()
+	midApplied := mgr2.lastApplied
+	midCommitted := mgr2.lastCommitted
+	mgr2.mu.Unlock()
+
+	t.Logf("Sredina PRED rollbackom: applied=%d, committed=%d", midApplied, midCommitted)
+
+	if midApplied <= midCommitted {
+		t.Fatal("Test ni veljaven: Sredina nima ne-commitanih vpisov")
+	}
+
+	userBeforeRollback := st2.GetUser(999)
+	if userBeforeRollback == nil {
+		t.Fatal("Uporabnik 999 bi moral biti v state-u Sredine PRED rollbackom")
+	}
+	t.Logf("Uporabnik 999 JE v state-u Sredine pred rollbackom: %s", userBeforeRollback.Name)
+
+	t.Log("Rekonfiguriram: Sredina postane nov Rep...")
+	_ = mgr2.UpdateTopology(a1, "", false, true) // prev=Head, next="", isTail=true
+
+	// preverimo rollback.
+	mgr2.mu.Lock()
+	midAppliedAfter := mgr2.lastApplied
+	midCommittedAfter := mgr2.lastCommitted
+	mgr2.mu.Unlock()
+
+	t.Logf("Sredina PO rollbacku: applied=%d, committed=%d", midAppliedAfter, midCommittedAfter)
+
+	if midAppliedAfter != midCommittedAfter {
+		t.Errorf("Po rollbacku bi moralo veljati applied == committed, dobljeno applied=%d, committed=%d",
+			midAppliedAfter, midCommittedAfter)
+	}
+
+	userAfterRollback := st2.GetUser(999)
+	if userAfterRollback != nil {
+		t.Errorf("NAPAKA: Uporabnik 999 je še vedno v state-u Sredine po rollbacku! "+
+			"Rollback ni pravilno odstranil ne-commitanih sprememb iz state-a. Ime: %s", userAfterRollback.Name)
+	} else {
+		t.Log("USPEH: Uporabnik 999 je bil pravilno odstranjen iz state-a po rollbacku")
+	}
+
+	// Preveri, da commitani vpis (tema 1) ŠE obstaja
+	if topic := st2.GetTopic(1); topic == nil || topic.Name != "CommittedTema" {
+		t.Errorf("Commitana tema je bila napačno odstranjena pri rollbacku!")
+	} else {
+		t.Log("Commitana tema je pravilno ohranjena po rollbacku")
+	}
+
+	// še en commit kot dokaz da še dela HEAD -> MID
+	t.Log("Testiram novo verigo...")
+	_ = mgr1.UpdateTopology("", a2, true, false) // Head: next = Middle (now tail)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := mgr1.ReplicateUser(ctx, &publicpb.User{Id: 2, Name: "NovUporabnik"}); err != nil {
+		t.Fatalf("Replikacija po rekonfiguraciji ni uspela: %v", err)
+	}
+
+	if user := st2.GetUser(2); user == nil || user.Name != "NovUporabnik" {
+		t.Errorf("Nov uporabnik manjka v Sredini (zdaj Rep) po rekonfiguraciji")
+	} else {
+		t.Log("Nova veriga deluje pravilno")
+	}
+
+	t.Log("Test uspešno zaključen: rollback pravilno odstrani ne-commitane spremembe iz state-a!")
+}
